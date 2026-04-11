@@ -1,14 +1,15 @@
 # LPR System — Raspberry Pi 5 License Plate Recognition
 
-Dual-camera license plate recognition system using **YOLOv8s** for vehicle
-detection and **EasyOCR** for plate reading, running on a Raspberry Pi 5.
+Dual-camera license plate recognition system using a dedicated **YOLOv8
+license plate detector** and **EasyOCR** for text reading, running on a
+Raspberry Pi 5.
 
 ## Features
 
 - **Dual USB webcams** — entrance (`/dev/video0`) and exit (`/dev/video1`)
-- **Motion detection** (MOG2) → **YOLOv8s vehicle confirmation** → **EasyOCR plate reading**
+- **Motion detection** (MOG2) → **YOLOv8 plate detection** → **EasyOCR plate reading**
 - YOLO bounding boxes drawn on the live MJPEG stream
-- 5-second cooldown prevents duplicate captures of the same vehicle
+- 10-second cooldown prevents duplicate captures of the same plate
 - SQLite database logs every detection
 - Dark-themed Flask dashboard with live feeds, stats, and date filtering
 
@@ -24,7 +25,7 @@ detection and **EasyOCR** for plate reading, running on a Raspberry Pi 5.
 
 ```
 lpr_system/
-├── camera_system.py     # motion detection + YOLO vehicle detection + capture
+├── camera_system.py     # motion detection + plate detection + capture
 ├── ocr_processor.py     # EasyOCR plate recognition + image preprocessing
 ├── database.py          # SQLite setup and queries
 ├── app.py               # Flask web server + dashboard
@@ -32,8 +33,8 @@ lpr_system/
 ├── templates/
 │   └── dashboard.html   # dark-themed dashboard UI
 ├── models/
-│   └── yolov8s.pt       # auto-downloaded by download_models.py
-├── captures/            # saved vehicle images
+│   └── license_plate_detector.pt  # auto-downloaded by download_models.py
+├── captures/            # saved plate images
 ├── requirements.txt
 └── README.md
 ```
@@ -65,7 +66,8 @@ pip install -r requirements.txt --break-system-packages
 python download_models.py
 ```
 
-This downloads YOLOv8s (~22 MB) and the EasyOCR English text-detection models.
+This downloads the `license_plate_detector.pt` model and EasyOCR English
+text-detection models.
 Subsequent runs will use the cached files with no network needed.
 
 ### 4. Start the system
@@ -85,14 +87,14 @@ Frame from webcam
  MOG2 motion detection
       │ motion? ──No──▶ skip
       ▼
- YOLOv8s inference
-      │ vehicle? ──No──▶ skip
+ YOLOv8 plate detector inference
+      │ plate? ──No──▶ skip
       ▼
- Crop vehicle bounding box
+ Crop plate bounding box
       │
       ▼
  Image preprocessing
- (grayscale → CLAHE → denoise)
+ (multiple preprocessing variants)
       │
       ▼
  EasyOCR plate reading
@@ -114,10 +116,10 @@ Key settings in `camera_system.py`:
 
 | Variable           | Default | Description                               |
 |--------------------|---------|-------------------------------------------|
-| `MOTION_THRESHOLD` | 5000    | Min contour area (px²) to trigger YOLO    |
-| `CAPTURE_COOLDOWN` | 5.0     | Seconds between captures per camera       |
-| `YOLO_CONF`        | 0.35    | YOLO minimum confidence threshold         |
-| `VEHICLE_CLASSES`  | 2,3,5,7 | COCO class IDs (car, motorcycle, bus, truck) |
+| `MOTION_THRESHOLD` | 8000    | Min contour area (px²) to trigger YOLO    |
+| `CAPTURE_COOLDOWN` | 10.0    | Seconds between captures per tracked plate |
+| `YOLO_CONF`        | 0.50    | YOLO minimum confidence threshold         |
+| `MIN_PLATE_AREA`   | 700     | Minimum plate bounding-box area (px²)     |
 
 ## License
 

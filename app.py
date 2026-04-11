@@ -1,13 +1,13 @@
 """
-app.py — Flask web server + dashboard for the LPR system.
+app.py - Flask web server + dashboard for the LPR system.
 
 Endpoints:
-  /               → dashboard UI
-  /video/entrance → MJPEG stream for entrance camera (with YOLO boxes)
-  /video/exit     → MJPEG stream for exit camera (with YOLO boxes)
-  /api/detections → JSON: recent detections (query ?date=YYYY-MM-DD to filter)
-  /api/stats      → JSON: summary statistics
-  /captures/<fn>  → serve saved vehicle images
+    /               -> dashboard UI
+    /video/entrance -> MJPEG stream for entrance camera (with YOLO boxes)
+    /video/exit     -> MJPEG stream for exit camera (with YOLO boxes)
+    /api/detections -> JSON: recent detections (query ?date=YYYY-MM-DD to filter)
+    /api/stats      -> JSON: summary statistics
+    /captures/<fn>  -> serve saved plate images
 """
 
 import os
@@ -29,6 +29,36 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CAPTURES_DIR = os.path.join(BASE_DIR, "captures")
 
 app = Flask(__name__, template_folder=os.path.join(BASE_DIR, "templates"))
+
+
+def _normalize_capture_filename(image_path: str | None) -> str | None:
+    """Normalize DB/UI capture paths to a filename under captures/."""
+    if not image_path:
+        return None
+
+    normalized = str(image_path).replace("\\", "/").lstrip("/")
+    if normalized.startswith("captures/"):
+        normalized = normalized[len("captures/"):]
+
+    # Only allow filename lookups directly under captures/.
+    normalized = os.path.basename(normalized)
+    if normalized in ("", ".", ".."):
+        return None
+
+    return normalized or None
+
+
+def _build_capture_url(image_path: str | None) -> str | None:
+    """Return a web URL for existing capture files, else None."""
+    filename = _normalize_capture_filename(image_path)
+    if not filename:
+        return None
+
+    abs_path = os.path.join(CAPTURES_DIR, filename)
+    if not os.path.isfile(abs_path):
+        return None
+
+    return f"/captures/{filename}"
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +85,7 @@ def _generate_mjpeg(camera_name: str):
                 + b"\r\n"
             )
         else:
-            # No frame yet — send a tiny pause
+            # No frame yet - send a tiny pause
             time.sleep(0.1)
 
         # ~15 FPS cap to save Pi 5 bandwidth
@@ -103,6 +133,11 @@ def api_detections():
         detections = get_detections_by_date(date_filter)
     else:
         detections = get_recent_detections(limit=100)
+
+    # Attach a safe thumbnail URL only when the file still exists.
+    for row in detections:
+        row["image_url"] = _build_capture_url(row.get("image_path"))
+
     return jsonify(detections)
 
 
@@ -114,8 +149,11 @@ def api_stats():
 
 @app.route("/captures/<path:filename>")
 def serve_capture(filename: str):
-    """Serve a saved vehicle image from the captures folder."""
-    return send_from_directory(CAPTURES_DIR, filename)
+    """Serve a saved plate image from the captures folder."""
+    normalized = _normalize_capture_filename(filename)
+    if not normalized:
+        return ("", 404)
+    return send_from_directory(CAPTURES_DIR, normalized)
 
 
 @app.route("/api/devices")
@@ -172,12 +210,12 @@ def api_stop_camera():
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     print("=" * 60)
-    print("  LPR System — Starting up")
+    print("  LPR System - Starting up")
     print("=" * 60)
 
     # Load YOLO model; cameras are assigned from the dashboard
     start_cameras()
 
     # Run Flask (accessible on the local network)
-    print("[web] Dashboard → http://0.0.0.0:5000")
+    print("[web] Dashboard -> http://0.0.0.0:5000")
     app.run(host="0.0.0.0", port=5000, threaded=True, debug=False)

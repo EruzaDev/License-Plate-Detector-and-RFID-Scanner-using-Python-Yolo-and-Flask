@@ -1,13 +1,13 @@
 """
-camera_system.py — Motion detection + YOLOv8s vehicle detection + tracking + capture.
+camera_system.py - Motion detection + YOLOv8 license-plate detection + tracking.
 
 Pipeline per camera (runs in its own thread):
-  1. MOG2 background subtraction detects motion in the frame.
-  2. If motion area exceeds threshold → run YOLOv8s to detect vehicles.
-  3. Euclidean-distance tracker assigns stable IDs to each vehicle.
-  4. Each tracked vehicle is captured only ONCE (per-ID cooldown).
-  5. Burst-crop + batch consensus OCR reads the plate.
-  6. Result is saved to SQLite.
+    1. MOG2 background subtraction detects motion in the frame.
+    2. If motion area exceeds threshold -> run the plate detector model.
+    3. Euclidean-distance tracker assigns stable IDs to each plate box.
+    4. Each tracked plate is captured only ONCE (per-ID cooldown).
+    5. Burst-crop + batch consensus OCR reads the plate text.
+    6. Result is saved to SQLite.
 """
 
 import os
@@ -24,33 +24,37 @@ from ocr_processor import recognise_plate_batch
 from database import insert_detection
 from tracker import Tracker
 
+try:
+    from plate_debug_saver import save_debug_plate_image
+except Exception:
+    # Optional helper for bug testing. Safe no-op when file is removed.
+    def save_debug_plate_image(*_args, **_kwargs):
+        return None
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CAPTURES_DIR = os.path.join(BASE_DIR, "captures")
-MODEL_PATH = os.path.join(BASE_DIR, "models", "yolov8s.pt")
+MODEL_PATH = os.path.join(BASE_DIR, "models", "license_plate_detector.pt")
 
-# If model isn't in models/ yet, ultralytics will auto-download to cwd
+# Allow a project-root fallback for manual placement of the model file.
 if not os.path.exists(MODEL_PATH):
-    MODEL_PATH = "yolov8s.pt"
-
-# YOLO class IDs that count as "vehicle"
-VEHICLE_CLASSES = {2, 3, 5, 7}  # car, motorcycle, bus, truck
+    MODEL_PATH = os.path.join(BASE_DIR, "license_plate_detector.pt")
 
 # Motion detection: minimum contour area (pixels) to count as real motion
 MOTION_THRESHOLD = 8000
 
-# Cooldown per tracked vehicle ID (seconds) — once a vehicle ID is captured,
+# Cooldown per tracked plate ID (seconds) - once a plate ID is captured,
 # it won't be captured again for this duration
 CAPTURE_COOLDOWN = 10.0
 
 # YOLO confidence threshold
 YOLO_CONF = 0.50
 
-# Minimum bounding box area (pixels) to accept a vehicle detection
+# Minimum bounding box area (pixels) to accept a plate detection
 # Filters out tiny false-positive boxes
-MIN_VEHICLE_AREA = 8000
+MIN_PLATE_AREA = 700
 
 # Burst capture: how many crops to collect and over how long
 BURST_FRAMES = 5
@@ -65,6 +69,8 @@ os.makedirs(CAPTURES_DIR, exist_ok=True)
 # Latest annotated frame per camera (with YOLO bounding boxes drawn)
 latest_frames = {"entrance": None, "exit": None}
 frame_locks = {"entrance": threading.Lock(), "exit": threading.Lock()}
+HAS_V4L2_SYSFS = os.path.isdir("/sys/class/video4linux")
+GENERIC_PROBE_COUNT = 10
 
 
 def _draw_boxes(frame: np.ndarray, detections: list) -> np.ndarray:
@@ -114,16 +120,11 @@ class CameraProcessor:
             history=500, varThreshold=40, detectShadows=True
         )
 
-        # Per-class trackers for stable vehicle IDs
-        self._trackers = {
-            "car": Tracker(),
-            "motorcycle": Tracker(),
-            "bus": Tracker(),
-            "truck": Tracker(),
-        }
+        # Single tracker for plate boxes
+        self._plate_tracker = Tracker()
 
-        # Per-vehicle-ID cooldown: {(cls_name, track_id): last_capture_time}
-        self._captured_ids: dict[tuple[str, int], float] = {}
+        # Per-track-ID cooldown: {track_id: last_capture_time}
+        self._captured_ids: dict[int, float] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -144,21 +145,22 @@ class CameraProcessor:
     # Capture loop — fast, never blocked by YOLO / OCR
     # ------------------------------------------------------------------
     def _capture_loop(self):
-        cap = cv2.VideoCapture(self.device_index, cv2.CAP_V4L2)
-        if not cap.isOpened():
-            print(f"[{self.camera_name}] ERROR: cannot open /dev/video{self.device_index}")
+        cap, backend_name = _open_video_capture(self.device_index)
+        if cap is None:
+            print(f"[{self.camera_name}] ERROR: cannot open {_device_label(self.device_index)}")
             return
 
-        # Use MJPEG format — critical for running two USB cams simultaneously
-        # (raw YUV streams exceed USB 2.0 bandwidth on a shared controller)
-        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
-        cap.set(cv2.CAP_PROP_FOURCC, fourcc)
+        # Use MJPEG format on Linux/V4L2 to reduce USB bandwidth usage.
+        if backend_name == "CAP_V4L2":
+            fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+            cap.set(cv2.CAP_PROP_FOURCC, fourcc)
 
         # Lower resolution for performance
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
-        print(f"[{self.camera_name}] Camera started on /dev/video{self.device_index}")
+        print(f"[{self.camera_name}] Camera started on {_device_label(self.device_index)} "
+              f"({backend_name})")
 
         while self.running:
             ret, frame = cap.read()
@@ -201,64 +203,65 @@ class CameraProcessor:
                 cv2.contourArea(c) > MOTION_THRESHOLD for c in contours
             )
 
-            # --- Step 2: If motion → run YOLOv8s ---
-            vehicle_detections = []
+            # --- Step 2: If motion -> run plate detector ---
+            plate_detections = []
             if motion_detected:
                 results = self.model(frame, conf=YOLO_CONF, verbose=False)[0]
+                names = results.names
 
-                # Sort detections by class for the per-class trackers
-                class_boxes: dict[str, list[list[int]]] = {
-                    "car": [], "motorcycle": [], "bus": [], "truck": [],
-                }
-                class_confs: dict[str, dict[tuple[int, ...], float]] = {
-                    "car": {}, "motorcycle": {}, "bus": {}, "truck": {},
-                }
+                detected_boxes: list[list[int]] = []
+                box_meta: dict[tuple[int, int, int, int], dict[str, float | str]] = {}
 
                 for box in results.boxes:
-                    cls_id = int(box.cls[0])
-                    if cls_id not in VEHICLE_CLASSES:
-                        continue
-                    cls_name = results.names[cls_id]
-                    if cls_name not in class_boxes:
-                        continue
                     coords = box.xyxy[0].tolist()
                     box_area = (coords[2] - coords[0]) * (coords[3] - coords[1])
-                    if box_area < MIN_VEHICLE_AREA:
+                    if box_area < MIN_PLATE_AREA:
                         continue
-                    int_coords = [int(c) for c in coords]
-                    class_boxes[cls_name].append(int_coords)
-                    class_confs[cls_name][tuple(int_coords)] = float(box.conf[0])
 
-                # Update per-class trackers and build detection list
-                for cls_name, boxes in class_boxes.items():
-                    if not boxes:
-                        continue
-                    tracked = self._trackers[cls_name].update(boxes)
-                    for x1, y1, x2, y2, track_id in tracked:
-                        conf = class_confs[cls_name].get((x1, y1, x2, y2), 0.5)
-                        vehicle_detections.append({
-                            "box": [x1, y1, x2, y2],
-                            "conf": conf,
-                            "cls_name": cls_name,
-                            "track_id": track_id,
-                        })
+                    int_coords = [int(c) for c in coords]
+
+                    cls_id = int(box.cls[0]) if box.cls is not None else -1
+                    if isinstance(names, dict):
+                        cls_name = names.get(cls_id, "license_plate")
+                    elif isinstance(names, list) and 0 <= cls_id < len(names):
+                        cls_name = names[cls_id]
+                    else:
+                        cls_name = "license_plate"
+                    detected_boxes.append(int_coords)
+                    box_meta[tuple(int_coords)] = {
+                        "conf": float(box.conf[0]),
+                        "cls_name": cls_name,
+                    }
+
+                tracked = self._plate_tracker.update(detected_boxes)
+                for x1, y1, x2, y2, track_id in tracked:
+                    meta = box_meta.get(
+                        (x1, y1, x2, y2),
+                        {"conf": 0.5, "cls_name": "license_plate"},
+                    )
+                    plate_detections.append({
+                        "box": [x1, y1, x2, y2],
+                        "conf": float(meta["conf"]),
+                        "cls_name": str(meta["cls_name"]),
+                        "track_id": track_id,
+                    })
 
             # --- Draw bounding boxes and update the live stream ---
-            if vehicle_detections:
-                annotated = _draw_boxes(frame, vehicle_detections)
+            if plate_detections:
+                annotated = _draw_boxes(frame, plate_detections)
                 with frame_locks[self.camera_name]:
                     latest_frames[self.camera_name] = annotated
 
-            # --- Step 3: For each tracked vehicle, capture once per ID ---
+            # --- Step 3: For each tracked plate, capture once per ID ---
             now = time.time()
-            for det in vehicle_detections:
-                key = (det["cls_name"], det["track_id"])
-                last_time = self._captured_ids.get(key, 0.0)
+            for det in plate_detections:
+                track_id = int(det["track_id"])
+                last_time = self._captured_ids.get(track_id, 0.0)
                 if (now - last_time) >= CAPTURE_COOLDOWN:
-                    self._captured_ids[key] = now
+                    self._captured_ids[track_id] = now
                     frame_snapshot = frame.copy()
                     threading.Thread(
-                        target=self._process_vehicle,
+                        target=self._process_plate,
                         args=(frame_snapshot, det),
                         daemon=True,
                     ).start()
@@ -274,8 +277,8 @@ class CameraProcessor:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-    def _crop_vehicle(self, frame: np.ndarray, detection: dict) -> np.ndarray | None:
-        """Crop a vehicle region from the frame. Returns None if empty."""
+    def _crop_detection(self, frame: np.ndarray, detection: dict) -> np.ndarray | None:
+        """Crop a detected region from the frame. Returns None if empty."""
         x1, y1, x2, y2 = [int(v) for v in detection["box"]]
         h, w = frame.shape[:2]
         x1, y1 = max(0, x1), max(0, y1)
@@ -283,16 +286,18 @@ class CameraProcessor:
         crop = frame[y1:y2, x1:x2]
         return crop if crop.size > 0 else None
 
-    def _process_vehicle(self, first_frame: np.ndarray, detection: dict):
+    def _process_plate(self, first_frame: np.ndarray, detection: dict):
         """
-        Burst-capture ~5 crops of the same vehicle over ~1 s, then run
+        Burst-capture ~5 crops of the same plate over ~1 s, then run
         batch consensus OCR across all crops for maximum accuracy.
         """
+        # Collect plate crops and run consensus OCR over the burst.
+        plate_crops: list[np.ndarray] = []
+
         # First crop from the triggering frame
-        crops: list[np.ndarray] = []
-        crop = self._crop_vehicle(first_frame, detection)
+        crop = self._crop_detection(first_frame, detection)
         if crop is not None:
-            crops.append(crop)
+            plate_crops.append(crop)
 
         # Collect more crops from subsequent live frames
         for _ in range(BURST_FRAMES - 1):
@@ -304,25 +309,25 @@ class CameraProcessor:
             # Re-run YOLO quickly to get updated bounding box
             results = self.model(frame, conf=YOLO_CONF, verbose=False)[0]
             best_det = None
-            best_area = 0
+            best_score = 0.0
             for box in results.boxes:
-                cls_id = int(box.cls[0])
-                if cls_id in VEHICLE_CLASSES:
-                    coords = box.xyxy[0].tolist()
-                    area = (coords[2] - coords[0]) * (coords[3] - coords[1])
-                    if area > best_area:
-                        best_area = area
-                        best_det = {"box": coords}
+                coords = box.xyxy[0].tolist()
+                area = (coords[2] - coords[0]) * (coords[3] - coords[1])
+                if area < MIN_PLATE_AREA:
+                    continue
+                score = float(box.conf[0])
+                if score > best_score:
+                    best_score = score
+                    best_det = {"box": coords}
             if best_det is not None:
-                c = self._crop_vehicle(frame, best_det)
+                c = self._crop_detection(frame, best_det)
                 if c is not None:
-                    crops.append(c)
+                    plate_crops.append(c)
 
-        if not crops:
+        if not plate_crops:
             return
 
-        # --- Batch consensus OCR across all collected crops ---
-        plate, confidence = recognise_plate_batch(crops)
+        plate, confidence = recognise_plate_batch(plate_crops)
 
         # Build filename and save
         now = datetime.now()
@@ -331,9 +336,18 @@ class CameraProcessor:
         filename = f"{ts_file}_{self.camera_name}_{plate}.jpg"
         filepath = os.path.join(CAPTURES_DIR, filename)
 
-        cv2.imwrite(filepath, first_frame)
+        image_to_save = plate_crops[0]
+        cv2.imwrite(filepath, image_to_save)
 
-        rel_path = os.path.join("captures", filename)
+        # Optional debug copy for bug testing of plate crops.
+        save_debug_plate_image(
+            plate_image=plate_crops[0],
+            camera_name=self.camera_name,
+            plate_text=plate,
+            confidence=confidence,
+        )
+
+        rel_path = f"captures/{filename}"
 
         insert_detection(
             plate_number=plate,
@@ -343,7 +357,7 @@ class CameraProcessor:
             confidence=confidence,
         )
         print(f"[{self.camera_name}] Detected: {plate} (conf={confidence:.2f}, "
-              f"{len(crops)} crops) → {filename}")
+              f"{len(plate_crops)} plate crops) -> {filename}")
 
 
 # ---------------------------------------------------------------------------
@@ -358,9 +372,14 @@ _yolo_model = None
 def _get_model():
     global _yolo_model
     if _yolo_model is None:
-        print("[system] Loading YOLOv8s model …")
+        if not os.path.exists(MODEL_PATH):
+            raise FileNotFoundError(
+                "license_plate_detector.pt not found. "
+                "Run 'python download_models.py' first."
+            )
+        print(f"[system] Loading license plate detector from {MODEL_PATH} ...")
         _yolo_model = YOLO(MODEL_PATH)
-        print("[system] YOLOv8s ready.")
+        print("[system] License plate detector ready.")
     return _yolo_model
 
 
@@ -380,8 +399,64 @@ def stop_cameras():
     _processors.clear()
 
 
+def _device_label(idx: int) -> str:
+    """Return a user-facing label for a camera device index."""
+    if HAS_V4L2_SYSFS:
+        return f"/dev/video{idx}"
+    return f"camera index {idx}"
+
+
+def _capture_backend_candidates() -> list[tuple[int | None, str]]:
+    """Return preferred OpenCV backend candidates per OS."""
+    candidates: list[tuple[int | None, str]] = []
+    if os.name == "nt":
+        candidates.extend([
+            (getattr(cv2, "CAP_DSHOW", None), "CAP_DSHOW"),
+            (getattr(cv2, "CAP_MSMF", None), "CAP_MSMF"),
+        ])
+    elif HAS_V4L2_SYSFS:
+        candidates.append((getattr(cv2, "CAP_V4L2", None), "CAP_V4L2"))
+
+    # Final fallback lets OpenCV auto-select a backend.
+    candidates.append((None, "default"))
+
+    # De-duplicate when a backend constant is unavailable.
+    unique: list[tuple[int | None, str]] = []
+    seen: set[int | None] = set()
+    for backend, name in candidates:
+        if backend in seen:
+            continue
+        seen.add(backend)
+        unique.append((backend, name))
+    return unique
+
+
+def _open_video_capture(device_index: int) -> tuple[cv2.VideoCapture | None, str]:
+    """Try opening a camera index with OS-appropriate OpenCV backends."""
+    for backend, name in _capture_backend_candidates():
+        cap = cv2.VideoCapture(device_index) if backend is None \
+            else cv2.VideoCapture(device_index, backend)
+        if cap.isOpened():
+            return cap, name
+        cap.release()
+    return None, "unavailable"
+
+
+def _can_read_frame(cap: cv2.VideoCapture, attempts: int = 5) -> bool:
+    """Warm up and verify the capture can return at least one frame."""
+    for _ in range(attempts):
+        ret, frame = cap.read()
+        if ret and frame is not None and frame.size > 0:
+            return True
+        time.sleep(0.05)
+    return False
+
+
 def _get_device_name(idx: int) -> str:
     """Read the human-readable device name from sysfs, or fall back."""
+    if not HAS_V4L2_SYSFS:
+        return f"Camera {idx}"
+
     name_path = f"/sys/class/video4linux/video{idx}/name"
     try:
         with open(name_path) as f:
@@ -396,6 +471,9 @@ def _is_capture_device(idx: int) -> bool:
     'Video Capture' in its V4L2 capabilities via sysfs device uevent,
     or by checking the sysfs index file. Metadata-only nodes are filtered out.
     """
+    if not HAS_V4L2_SYSFS:
+        return True
+
     # Method 1: check for 'capture' in the device_caps via uevent
     uevent_path = f"/sys/class/video4linux/video{idx}/uevent"
     try:
@@ -421,15 +499,19 @@ def _find_video_indices() -> list[int]:
     Scan /sys/class/video4linux/ to find which video device indices exist.
     Only returns indices that exist on disk — no blind probing.
     """
-    indices: list[int] = []
-    for path in sorted(glob.glob("/sys/class/video4linux/video*")):
-        name = os.path.basename(path)
-        try:
-            idx = int(name.replace("video", ""))
-            indices.append(idx)
-        except ValueError:
-            continue
-    return indices
+    if HAS_V4L2_SYSFS:
+        indices: list[int] = []
+        for path in sorted(glob.glob("/sys/class/video4linux/video*")):
+            name = os.path.basename(path)
+            try:
+                idx = int(name.replace("video", ""))
+                indices.append(idx)
+            except ValueError:
+                continue
+        return indices
+
+    # Non-Linux fallback: probe a small index range (0..9).
+    return list(range(GENERIC_PROBE_COUNT))
 
 
 def list_video_devices() -> list[dict]:
@@ -462,10 +544,9 @@ def list_video_devices() -> list[dict]:
         if not _is_capture_device(idx):
             continue
 
-        # Open with V4L2 backend specifically to avoid FFMPEG fallback noise
-        cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
-        if cap.isOpened():
-            ret, _ = cap.read()
+        cap, _ = _open_video_capture(idx)
+        if cap is not None:
+            ret = _can_read_frame(cap)
             cap.release()
             if ret:
                 devices.append({
@@ -510,7 +591,7 @@ def reassign_camera(camera_name: str, new_device_index: int):
     )
     new_proc.start()
     _processors.append(new_proc)
-    print(f"[system] {camera_name} camera started on /dev/video{new_device_index}")
+    print(f"[system] {camera_name} camera started on {_device_label(new_device_index)}")
 
 
 def stop_camera(camera_name: str):

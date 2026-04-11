@@ -284,6 +284,13 @@
             transition: transform .2s;
         }
         .thumb:hover { transform: scale(2.5); z-index: 10; position: relative; }
+        .no-thumb {
+            display: inline-block;
+            width: 64px;
+            text-align: center;
+            color: #64748b;
+            font-size: .75rem;
+        }
         .confidence {
             font-family: 'Courier New', monospace;
             font-weight: 600;
@@ -403,7 +410,7 @@
 
 </div>
 
-<footer>LPR System — Raspberry Pi 5 &middot; YOLOv8s + EasyOCR</footer>
+<footer>LPR System — Raspberry Pi 5 &middot; YOLOv8 Plate Detector + EasyOCR</footer>
 
 <!-- ====== JavaScript ====== -->
 <script>
@@ -556,15 +563,21 @@
                 return;
             }
 
-            tbody.innerHTML = rows.map(r => `
+            tbody.innerHTML = rows.map(r => {
+                const thumb = r.image_url
+                    ? `<img class="thumb" src="${r.image_url}" alt="${r.plate_number}" onerror="this.style.display='none'">`
+                    : '<span class="no-thumb">N/A</span>';
+
+                return `
                 <tr>
-                    <td><img class="thumb" src="/${r.image_path}" alt="${r.plate_number}" onerror="this.style.display='none'"></td>
+                    <td>${thumb}</td>
                     <td><strong>${r.plate_number}</strong></td>
                     <td><span class="badge ${r.camera}">${r.camera}</span></td>
                     <td>${r.timestamp}</td>
                     <td class="confidence">${(r.confidence * 100).toFixed(1)}%</td>
                 </tr>
-            `).join('');
+                `;
+            }).join('');
         } catch (e) {
             console.error('Detections error:', e);
             tbody.innerHTML = '<tr><td colspan="5" class="no-data">Error loading data.</td></tr>';

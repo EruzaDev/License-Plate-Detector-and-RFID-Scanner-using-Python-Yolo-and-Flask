@@ -4,7 +4,7 @@ consensus and advanced DIP preprocessing.
 
 Pipeline:
   1. Multiple preprocessing variants are generated per crop to maximise OCR hits.
-  2. For batch mode, ~5 crops of the same vehicle are collected over ~1 second.
+    2. For batch mode, ~5 crops of the same plate are collected over ~1 second.
   3. OCR runs on every preprocessed variant of every crop.
   4. All candidate plate strings are compared; the most frequent (consensus)
      result is chosen as the final plate.
@@ -88,6 +88,99 @@ def preprocess_morph(image: np.ndarray) -> np.ndarray:
     return closed
 
 
+def _plate_bbox_from_contours(image: np.ndarray) -> tuple[int, int, int, int] | None:
+    """
+    Estimate a license-plate bounding box from a vehicle crop using contour
+    geometry (aspect ratio + area heuristics).
+    """
+    gray = _to_gray(image)
+    blur = cv2.bilateralFilter(gray, 11, 17, 17)
+    edges = cv2.Canny(blur, 50, 180)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 3))
+    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+
+    h, w = gray.shape[:2]
+    frame_area = float(max(h * w, 1))
+    best_box = None
+    best_score = 0.0
+
+    for cnt in sorted(contours, key=cv2.contourArea, reverse=True)[:40]:
+        peri = cv2.arcLength(cnt, True)
+        approx = cv2.approxPolyDP(cnt, 0.03 * peri, True)
+        if len(approx) < 4 or len(approx) > 10:
+            continue
+
+        x, y, bw, bh = cv2.boundingRect(approx)
+        if bw < 20 or bh < 8:
+            continue
+
+        area = float(bw * bh)
+        area_ratio = area / frame_area
+        aspect = bw / float(max(bh, 1))
+
+        if not (2.0 <= aspect <= 6.8):
+            continue
+        if not (0.006 <= area_ratio <= 0.35):
+            continue
+
+        # Score plate-likeness: typical aspect ratio and plausible size.
+        aspect_score = max(0.0, 1.0 - abs(aspect - 4.0) / 4.0)
+        area_score = max(0.0, 1.0 - abs(area_ratio - 0.06) / 0.06)
+        fill_ratio = min(1.0, cv2.contourArea(cnt) / max(area, 1.0))
+        score = (0.5 * aspect_score) + (0.35 * area_score) + (0.15 * fill_ratio)
+
+        if score > best_score:
+            best_score = score
+            best_box = (x, y, x + bw, y + bh)
+
+    return best_box
+
+
+def _expand_box(
+    box: tuple[int, int, int, int],
+    width: int,
+    height: int,
+    pad_ratio: float,
+) -> tuple[int, int, int, int]:
+    """Expand a bounding box by a ratio and clamp to image bounds."""
+    x1, y1, x2, y2 = box
+    pad_x = int((x2 - x1) * pad_ratio)
+    pad_y = int((y2 - y1) * pad_ratio)
+    x1 = max(0, x1 - pad_x)
+    y1 = max(0, y1 - pad_y)
+    x2 = min(width, x2 + pad_x)
+    y2 = min(height, y2 + pad_y)
+    return x1, y1, x2, y2
+
+
+def extract_plate_crop(
+    vehicle_image: np.ndarray,
+    pad_ratio: float = 0.08,
+) -> tuple[np.ndarray | None, tuple[int, int, int, int] | None]:
+    """
+    Detect a plate-like region inside a vehicle image and return
+    (plate_crop, plate_bbox). If no plate region is found, returns (None, None).
+    """
+    if vehicle_image is None or vehicle_image.size == 0:
+        return None, None
+
+    h, w = vehicle_image.shape[:2]
+    box = _plate_bbox_from_contours(vehicle_image)
+    if box is None:
+        return None, None
+
+    x1, y1, x2, y2 = _expand_box(box, w, h, pad_ratio)
+    crop = vehicle_image[y1:y2, x1:x2]
+    if crop.size == 0:
+        return None, None
+
+    return crop, (x1, y1, x2, y2)
+
+
 # All preprocessing pipelines to try on each crop
 _PREPROCESS_PIPELINES = [
     preprocess_clahe,
@@ -138,7 +231,7 @@ def recognise_plate(image: np.ndarray) -> tuple[str, float]:
 
 def recognise_plate_batch(images: list[np.ndarray]) -> tuple[str, float]:
     """
-    Run OCR on a batch of BGR crops (multiple frames of the same vehicle).
+    Run OCR on a batch of BGR crops (multiple frames of the same plate).
     Each image is processed through every DIP pipeline.
     The plate text that appears most often across all frames wins (majority vote).
     Returns (plate_text, avg_confidence).  Falls back to ("UNKNOWN", 0.0).
