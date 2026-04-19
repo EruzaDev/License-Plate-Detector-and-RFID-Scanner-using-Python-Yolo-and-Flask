@@ -74,7 +74,12 @@ def init_db():
             rfid_status  TEXT DEFAULT 'NOT_REQUIRED',
             expected_rfid_uid TEXT,
             scanned_rfid_uid  TEXT,
-            rfid_verified_at  TEXT
+            rfid_verified_at  TEXT,
+            sync_status TEXT DEFAULT 'PENDING',
+            sync_attempts INTEGER DEFAULT 0,
+            sync_last_error TEXT,
+            sync_last_attempt_at TEXT,
+            sync_synced_at TEXT
         )
     """)
 
@@ -89,6 +94,19 @@ def init_db():
     _ensure_column(conn, "detections", "expected_rfid_uid TEXT")
     _ensure_column(conn, "detections", "scanned_rfid_uid TEXT")
     _ensure_column(conn, "detections", "rfid_verified_at TEXT")
+    _ensure_column(conn, "detections", "sync_status TEXT DEFAULT 'PENDING'")
+    _ensure_column(conn, "detections", "sync_attempts INTEGER DEFAULT 0")
+    _ensure_column(conn, "detections", "sync_last_error TEXT")
+    _ensure_column(conn, "detections", "sync_last_attempt_at TEXT")
+    _ensure_column(conn, "detections", "sync_synced_at TEXT")
+
+    conn.execute(
+        """
+        UPDATE detections
+        SET sync_status = 'PENDING'
+        WHERE sync_status IS NULL OR TRIM(sync_status) = ''
+        """
+    )
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS registered_plates (
@@ -188,7 +206,8 @@ def insert_detection(plate_number: str, camera: str, timestamp: str,
                      rfid_status: str | None = None,
                      expected_rfid_uid: str | None = None,
                      scanned_rfid_uid: str | None = None,
-                     rfid_verified_at: str | None = None) -> int:
+                     rfid_verified_at: str | None = None,
+                     sync_status: str | None = None) -> int:
     """
     Insert a new detection record.
     Returns the new row id.
@@ -206,6 +225,9 @@ def insert_detection(plate_number: str, camera: str, timestamp: str,
         rfid_status_value = "NOT_SCANNED" if expected_uid_value else "NOT_REQUIRED"
     else:
         rfid_status_value = str(rfid_status).upper()
+    sync_status_value = str(sync_status or "PENDING").upper()
+    if sync_status_value not in {"PENDING", "SYNCED", "FAILED"}:
+        sync_status_value = "PENDING"
 
     cur = conn.execute(
         """INSERT INTO detections (
@@ -223,9 +245,14 @@ def insert_detection(plate_number: str, camera: str, timestamp: str,
                rfid_status,
                expected_rfid_uid,
                scanned_rfid_uid,
-               rfid_verified_at
+               rfid_verified_at,
+               sync_status,
+               sync_attempts,
+               sync_last_error,
+               sync_last_attempt_at,
+               sync_synced_at
            )
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             normalized_plate,
             camera,
@@ -242,6 +269,11 @@ def insert_detection(plate_number: str, camera: str, timestamp: str,
             expected_uid_value,
             scanned_uid_value,
             rfid_verified_at,
+            sync_status_value,
+            0,
+            None,
+            None,
+            None,
         ),
     )
     conn.commit()
@@ -373,7 +405,10 @@ def verify_detection_rfid(detection_id: int, scanned_uid: str) -> dict | None:
         UPDATE detections
         SET rfid_status = ?,
             scanned_rfid_uid = ?,
-            rfid_verified_at = ?
+            rfid_verified_at = ?,
+            sync_status = 'PENDING',
+            sync_last_error = NULL,
+            sync_synced_at = NULL
         WHERE id = ?
         """,
         (new_status, normalized_uid, verified_at, detection_id),
@@ -637,7 +672,10 @@ def correct_detection_plate(detection_id: int, corrected_plate: str) -> dict | N
             plate_valid = 1,
             matched_plate = ?,
             match_score = 100.0,
-            match_status = 'MANUAL_CORRECTION'
+            match_status = 'MANUAL_CORRECTION',
+            sync_status = 'PENDING',
+            sync_last_error = NULL,
+            sync_synced_at = NULL
         WHERE id = ?
         """,
         (normalized_plate, normalized_plate, normalized_plate, detection_id),
@@ -722,7 +760,10 @@ def review_flagged_detection(
         conn.execute(
             """
             UPDATE detections
-            SET match_status = 'REVIEWED_CONFIRMED'
+            SET match_status = 'REVIEWED_CONFIRMED',
+                sync_status = 'PENDING',
+                sync_last_error = NULL,
+                sync_synced_at = NULL
             WHERE id = ?
             """,
             (detection_id,),
@@ -739,7 +780,10 @@ def review_flagged_detection(
         conn.execute(
             """
             UPDATE detections
-            SET match_status = 'REVIEWED_REJECTED'
+            SET match_status = 'REVIEWED_REJECTED',
+                sync_status = 'PENDING',
+                sync_last_error = NULL,
+                sync_synced_at = NULL
             WHERE id = ?
             """,
             (detection_id,),
@@ -764,7 +808,10 @@ def review_flagged_detection(
             plate_valid = 1,
             matched_plate = ?,
             match_score = 100.0,
-            match_status = 'REVIEWED_CORRECTED'
+            match_status = 'REVIEWED_CORRECTED',
+            sync_status = 'PENDING',
+            sync_last_error = NULL,
+            sync_synced_at = NULL
         WHERE id = ?
         """,
         (normalized_plate, normalized_plate, normalized_plate, detection_id),
@@ -992,6 +1039,107 @@ def get_detections_by_camera(camera: str, limit: int = 100) -> list:
         (camera, limit),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_pending_sync_detections(limit: int = 100, include_failed: bool = True) -> list:
+    """Return detections waiting to be synced to cloud."""
+    conn = _get_connection()
+    statuses = ["PENDING"]
+    if include_failed:
+        statuses.append("FAILED")
+
+    placeholders = ",".join("?" for _ in statuses)
+    rows = conn.execute(
+        f"""
+        SELECT *
+        FROM detections
+        WHERE sync_status IN ({placeholders})
+        ORDER BY id ASC
+        LIMIT ?
+        """,
+        (*statuses, int(limit)),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_detections_sync_attempted(detection_ids: list[int]) -> None:
+    """Increment attempt counters before sync submission."""
+    if not detection_ids:
+        return
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = _get_connection()
+    conn.executemany(
+        """
+        UPDATE detections
+        SET sync_attempts = COALESCE(sync_attempts, 0) + 1,
+            sync_last_attempt_at = ?
+        WHERE id = ?
+        """,
+        [(now, int(d_id)) for d_id in detection_ids],
+    )
+    conn.commit()
+
+
+def mark_detections_synced(detection_ids: list[int]) -> None:
+    """Mark synced detections as SYNCED and clear failure details."""
+    if not detection_ids:
+        return
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = _get_connection()
+    conn.executemany(
+        """
+        UPDATE detections
+        SET sync_status = 'SYNCED',
+            sync_last_error = NULL,
+            sync_synced_at = ?
+        WHERE id = ?
+        """,
+        [(now, int(d_id)) for d_id in detection_ids],
+    )
+    conn.commit()
+
+
+def mark_detections_sync_failed(detection_ids: list[int], error_message: str | None = None) -> None:
+    """Mark detections as FAILED after a sync submission error."""
+    if not detection_ids:
+        return
+
+    message = str(error_message or "Cloud sync failed").strip()
+    if len(message) > 500:
+        message = message[:500]
+
+    conn = _get_connection()
+    conn.executemany(
+        """
+        UPDATE detections
+        SET sync_status = 'FAILED',
+            sync_last_error = ?
+        WHERE id = ?
+        """,
+        [(message, int(d_id)) for d_id in detection_ids],
+    )
+    conn.commit()
+
+
+def get_sync_status_counts() -> dict[str, int]:
+    """Return aggregate sync status counts for local monitoring."""
+    conn = _get_connection()
+    rows = conn.execute(
+        """
+        SELECT sync_status, COUNT(*) AS c
+        FROM detections
+        GROUP BY sync_status
+        """
+    ).fetchall()
+
+    counts = {"PENDING": 0, "FAILED": 0, "SYNCED": 0}
+    for row in rows:
+        status = str(row["sync_status"] or "PENDING").upper()
+        if status in counts:
+            counts[status] = int(row["c"])
+    return counts
 
 
 def get_stats() -> dict:

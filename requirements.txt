@@ -13,3 +13,6 @@ flask-wtf
 numpy
 rapidfuzz
 reportlab
+requests
+fastapi
+uvicorn

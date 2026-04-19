@@ -5,6 +5,9 @@ lpr_system.db
 lpr_system.db-wal
 lpr_system.db-shm
 lpr_system.db-journal
+cloud_sync.db
+cloud_sync.db-wal
+cloud_sync.db-shm
 /.venv/
 /.captures/
 /__pycache__/

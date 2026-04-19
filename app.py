@@ -56,11 +56,13 @@ from database import (
     get_logbook_entries,
     save_device_config,
     get_device_config,
+    get_sync_status_counts,
 )
 from camera_system import (start_cameras, latest_frames, frame_locks,
                            list_video_devices, get_camera_assignments,
                            reassign_camera, stop_camera,
                            scan_plate_once_from_device, start_device_mjpeg_stream)
+from sync_worker import CloudSyncWorker
 
 # ---------------------------------------------------------------------------
 # Flask app setup
@@ -76,6 +78,7 @@ bcrypt = Bcrypt(app)
 AUTH_DB_PATH = os.path.join(BASE_DIR, "lpr_system.db")
 PLATE_SANITIZER = re.compile(r"[^A-Z0-9]")
 RFID_SANITIZER = re.compile(r"[^A-Z0-9]")
+SYNC_WORKER = CloudSyncWorker()
 
 
 def _normalize_plate(value: str | None) -> str:
@@ -923,6 +926,28 @@ def api_stats():
     return jsonify(get_stats())
 
 
+@app.route("/api/sync/status", methods=["GET"])
+@_role_required("superadmin", "guard")
+def api_sync_status():
+    """Return Phase 4 cloud sync status and local queue counters."""
+    status = SYNC_WORKER.status()
+    status["local_counts"] = get_sync_status_counts()
+    return jsonify(status)
+
+
+@app.route("/api/sync/run", methods=["POST"])
+@_role_required("superadmin", "guard")
+def api_sync_run():
+    """Trigger one on-demand sync cycle."""
+    result = SYNC_WORKER.sync_once()
+    payload = {
+        "ok": bool(result.get("ok")),
+        "result": result,
+        "status": SYNC_WORKER.status(),
+    }
+    return jsonify(payload), (200 if result.get("ok") else 503)
+
+
 @app.route("/captures/<path:filename>")
 def serve_capture(filename: str):
     """Serve a saved plate image from the captures folder."""
@@ -1151,6 +1176,18 @@ if __name__ == "__main__":
     # Load YOLO model; cameras are assigned from the dashboard
     start_cameras()
 
+    if SYNC_WORKER.enabled:
+        SYNC_WORKER.start()
+        print(
+            "[sync] Cloud worker started -> "
+            f"{SYNC_WORKER.cloud_api_base_url} "
+            f"(interval={SYNC_WORKER.sync_interval_seconds}s, "
+            f"batch={SYNC_WORKER.sync_batch_size})"
+        )
+    else:
+        print("[sync] Cloud worker disabled (set CLOUD_API_BASE_URL to enable Phase 4 sync)")
+
     # Run Flask (accessible on the local network)
-    print("[web] Dashboard -> http://0.0.0.0:5000")
-    app.run(host="0.0.0.0", port=5000, threaded=True, debug=False)
+    port = int(os.getenv("PORT", "5000"))
+    print(f"[web] Dashboard -> http://0.0.0.0:{port}")
+    app.run(host="0.0.0.0", port=port, threaded=True, debug=False)

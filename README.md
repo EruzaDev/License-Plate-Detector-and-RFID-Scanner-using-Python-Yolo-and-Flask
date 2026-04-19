@@ -37,6 +37,8 @@ lpr_system/
 ├── ocr_processor.py     # EasyOCR plate recognition + image preprocessing
 ├── database.py          # SQLite setup and queries
 ├── app.py               # Flask web server + dashboard
+├── sync_worker.py       # background local -> cloud sync loop (Phase 4)
+├── cloud_sync_api.py    # thin FastAPI cloud mirror service
 ├── download_models.py   # one-time model download script
 ├── templates/
 │   ├── dashboard.html   # main operations dashboard
@@ -165,6 +167,74 @@ Frame from webcam
 - `/guard/device` for entry/exit camera assignment and preview
 - `/guard/review` for flagged detection review actions
 - `/logbook` for filterable logs with export controls (`?export=csv` or `?export=pdf`)
+
+## Phase 4 Offline-First Sync
+
+Local detections now include a `sync_status` lifecycle (`PENDING`, `FAILED`, `SYNCED`) and are always written to SQLite first.
+
+### Device worker behavior
+
+- `sync_worker.py` runs as a background thread inside `app.py`
+- On each cycle:
+     - checks cloud health: `GET /health`
+     - fetches local `PENDING` (+ optional `FAILED`) detections
+     - posts batch to cloud: `POST /sync/logs`
+     - marks local rows `SYNCED` on success or `FAILED` on sync submission error
+
+### App sync endpoints
+
+- `GET /api/sync/status` → runtime + queue counters
+- `POST /api/sync/run` → trigger one immediate sync cycle
+
+### Environment variables
+
+See `.env.example` for all settings. Important keys:
+
+- `CLOUD_API_BASE_URL`
+- `CLOUD_API_KEY`
+- `SYNC_INTERVAL_SECONDS`
+- `SYNC_BATCH_SIZE`
+- `SYNC_HTTP_TIMEOUT_SECONDS`
+- `SYNC_INCLUDE_FAILED`
+- `DEVICE_ID`
+
+### Cloud mirror API (FastAPI)
+
+Run the thin cloud API service:
+
+```bash
+uvicorn cloud_sync_api:app --host 0.0.0.0 --port 8000
+```
+
+Cloud API routes:
+
+- `GET /health`
+- `POST /sync/logs`
+- `GET /logs`
+
+### Railway Deployment (Cloud Sync API)
+
+This repository now includes a `Procfile` for Railway:
+
+```txt
+web: uvicorn cloud_sync_api:app --host 0.0.0.0 --port ${PORT:-8000}
+```
+
+Deploy steps:
+
+1. Create a new Railway service from this repo.
+2. Set environment variables on Railway:
+     - `CLOUD_API_KEY` = same shared key used by device `.env`
+     - `CLOUD_SYNC_DB_PATH` = `/data/cloud_sync.db` (if using a Railway volume)
+3. Confirm health endpoint works at `https://<your-service>.up.railway.app/health`.
+4. On the device app, set:
+     - `CLOUD_API_BASE_URL=https://<your-service>.up.railway.app`
+     - same `CLOUD_API_KEY`
+
+Optional but recommended:
+
+- Mount a Railway volume and use `/data/cloud_sync.db` to persist cloud mirror logs across redeploys.
+- For production scale, switch cloud storage from SQLite file to managed PostgreSQL.
 
 ## Configuration
 
