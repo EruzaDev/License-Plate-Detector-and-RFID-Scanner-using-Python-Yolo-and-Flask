@@ -12,3 +12,4 @@ flask-bcrypt
 flask-wtf
 numpy
 rapidfuzz
+reportlab

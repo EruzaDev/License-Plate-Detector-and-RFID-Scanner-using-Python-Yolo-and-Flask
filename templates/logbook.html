@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Logbook</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+        }
+        .topbar {
+            background: #111827;
+            border-bottom: 1px solid #1f2937;
+            padding: .8rem 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: .8rem;
+            flex-wrap: wrap;
+        }
+        .topbar nav { display: flex; gap: .5rem; flex-wrap: wrap; }
+        .topbar a {
+            color: #cbd5e1;
+            text-decoration: none;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: .3rem .55rem;
+            font-size: .82rem;
+        }
+        .topbar a:hover { border-color: #475569; color: #fff; }
+        .container {
+            max-width: 1320px;
+            margin: 0 auto;
+            padding: 1rem;
+        }
+        .card {
+            background: #111827;
+            border: 1px solid #1f2937;
+            border-radius: 12px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+        }
+        .filters {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(140px, 1fr));
+            gap: .65rem;
+        }
+        @media (max-width: 1100px) {
+            .filters { grid-template-columns: 1fr 1fr; }
+        }
+        @media (max-width: 700px) {
+            .filters { grid-template-columns: 1fr; }
+        }
+        label {
+            display: block;
+            margin-bottom: .3rem;
+            font-size: .82rem;
+            color: #cbd5e1;
+            font-weight: 600;
+        }
+        input, select {
+            width: 100%;
+            background: #020617;
+            border: 1px solid #334155;
+            color: #e2e8f0;
+            border-radius: 8px;
+            padding: .48rem .58rem;
+            font-size: .9rem;
+        }
+        .actions {
+            margin-top: .8rem;
+            display: flex;
+            gap: .5rem;
+            flex-wrap: wrap;
+        }
+        button {
+            border: none;
+            border-radius: 8px;
+            padding: .5rem .7rem;
+            cursor: pointer;
+            font-size: .82rem;
+            color: #fff;
+            font-weight: 600;
+        }
+        .btn-primary { background: #2563eb; }
+        .btn-csv { background: #059669; }
+        .btn-pdf { background: #7c3aed; }
+        .btn-reset {
+            display: inline-flex;
+            align-items: center;
+            text-decoration: none;
+            border: 1px solid #334155;
+            color: #cbd5e1;
+            border-radius: 8px;
+            padding: .45rem .65rem;
+            font-size: .82rem;
+        }
+        .btn-reset:hover { border-color: #475569; color: #fff; }
+        .table-wrap { overflow-x: auto; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 1220px;
+        }
+        th, td {
+            border-bottom: 1px solid #1e293b;
+            padding: .55rem .45rem;
+            text-align: left;
+            font-size: .82rem;
+            vertical-align: top;
+        }
+        th {
+            background: #0b1220;
+            color: #94a3b8;
+            text-transform: uppercase;
+            font-size: .73rem;
+            letter-spacing: .03em;
+        }
+        .thumb {
+            width: 84px;
+            height: 56px;
+            object-fit: cover;
+            border-radius: 8px;
+            border: 1px solid #334155;
+            background: #000;
+        }
+        .pill {
+            border-radius: 999px;
+            padding: .1rem .46rem;
+            font-size: .71rem;
+            display: inline-block;
+            border: 1px solid #334155;
+        }
+        .status-ok { background: rgba(22, 163, 74, .18); border-color: rgba(22, 163, 74, .5); color: #86efac; }
+        .status-flagged { background: rgba(220, 38, 38, .18); border-color: rgba(220, 38, 38, .5); color: #fecaca; }
+        .status-reviewed { background: rgba(37, 99, 235, .18); border-color: rgba(37, 99, 235, .5); color: #bfdbfe; }
+        .muted { color: #94a3b8; }
+    </style>
+</head>
+<body>
+    <header class="topbar">
+        <strong>Comprehensive Logbook</strong>
+        <nav>
+            <a href="/">Dashboard</a>
+            <a href="/guard/device">Device</a>
+            <a href="/guard/review">Review</a>
+            <a href="/users">Users</a>
+            <a href="/logout">Logout</a>
+        </nav>
+    </header>
+
+    <main class="container">
+        <section class="card">
+            <h1 style="margin-top:0; margin-bottom:.35rem;">Filters and Export</h1>
+            <p class="muted" style="margin-top:0; margin-bottom:.8rem;">
+                Filter by date, direction, status, and user, then export visible rows to CSV or PDF.
+            </p>
+
+            <form method="get" action="/logbook">
+                <div class="filters">
+                    <div>
+                        <label for="date_from">Date From</label>
+                        <input id="date_from" name="date_from" type="date" value="{{ filters.date_from }}">
+                    </div>
+                    <div>
+                        <label for="date_to">Date To</label>
+                        <input id="date_to" name="date_to" type="date" value="{{ filters.date_to }}">
+                    </div>
+                    <div>
+                        <label for="direction">Direction</label>
+                        <select id="direction" name="direction">
+                            <option value="" {% if not filters.direction %}selected{% endif %}>all</option>
+                            <option value="ENTRY" {% if filters.direction == 'ENTRY' %}selected{% endif %}>ENTRY</option>
+                            <option value="EXIT" {% if filters.direction == 'EXIT' %}selected{% endif %}>EXIT</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="status">Status</label>
+                        <select id="status" name="status">
+                            <option value="" {% if not filters.status %}selected{% endif %}>all</option>
+                            <option value="OK" {% if filters.status == 'OK' %}selected{% endif %}>OK</option>
+                            <option value="FLAGGED" {% if filters.status == 'FLAGGED' %}selected{% endif %}>FLAGGED</option>
+                            <option value="REVIEWED" {% if filters.status == 'REVIEWED' %}selected{% endif %}>REVIEWED</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="user">User / Owner</label>
+                        <input id="user" name="user" value="{{ filters.user }}" placeholder="Owner or plate">
+                    </div>
+                </div>
+
+                <div class="actions">
+                    <button class="btn-primary" type="submit">Apply Filters</button>
+                    <button class="btn-csv" type="submit" name="export" value="csv">Export CSV</button>
+                    <button class="btn-pdf" type="submit" name="export" value="pdf">Export PDF</button>
+                    <a class="btn-reset" href="/logbook">Reset</a>
+                </div>
+            </form>
+        </section>
+
+        <section class="card">
+            <h2 style="margin-top:0; margin-bottom:.65rem;">Entries ({{ entries|length }})</h2>
+            {% if entries %}
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Image</th>
+                                <th>Timestamp</th>
+                                <th>Vehicle Plate</th>
+                                <th>Owner</th>
+                                <th>Direction</th>
+                                <th>Camera</th>
+                                <th>RFID</th>
+                                <th>Confidence</th>
+                                <th>Source</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for row in entries %}
+                                <tr>
+                                    <td>
+                                        {% if row.image_url %}
+                                            <img class="thumb" src="{{ row.image_url }}" alt="Capture {{ row.id }}">
+                                        {% else %}
+                                            <span class="muted">N/A</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>{{ row.timestamp }}</td>
+                                    <td>
+                                        <strong>{{ row.plate_number }}</strong><br>
+                                        <span class="muted">OCR: {{ row.ocr_raw or '-' }}</span>
+                                    </td>
+                                    <td>{{ row.owner_name or '-' }}</td>
+                                    <td>{{ row.direction }}</td>
+                                    <td>{{ row.camera }}</td>
+                                    <td>{{ row.rfid_status }}</td>
+                                    <td>{{ row.confidence_percent }}</td>
+                                    <td>{{ row.entry_source }}</td>
+                                    <td>
+                                        <span class="pill status-{{ row.status.lower() }}">{{ row.status }}</span>
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            {% else %}
+                <p class="muted" style="margin:0;">No entries found for the selected filters.</p>
+            {% endif %}
+        </section>
+    </main>
+</body>
+</html>

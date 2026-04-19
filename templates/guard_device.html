@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Guard Device Assignment</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+        }
+        .topbar {
+            background: #111827;
+            border-bottom: 1px solid #1f2937;
+            padding: .8rem 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: .8rem;
+            flex-wrap: wrap;
+        }
+        .topbar nav {
+            display: flex;
+            gap: .5rem;
+            flex-wrap: wrap;
+        }
+        .topbar a {
+            color: #cbd5e1;
+            text-decoration: none;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: .3rem .55rem;
+            font-size: .82rem;
+        }
+        .topbar a:hover { border-color: #475569; color: #fff; }
+        .container {
+            max-width: 1080px;
+            margin: 0 auto;
+            padding: 1rem;
+        }
+        .card {
+            background: #111827;
+            border: 1px solid #1f2937;
+            border-radius: 12px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+        }
+        h1, h2, h3 { margin-top: 0; }
+        .muted { color: #94a3b8; font-size: .88rem; }
+        .grid-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: .9rem;
+        }
+        @media (max-width: 900px) {
+            .grid-2 { grid-template-columns: 1fr; }
+        }
+        label {
+            display: block;
+            margin-bottom: .3rem;
+            font-size: .84rem;
+            color: #cbd5e1;
+            font-weight: 600;
+        }
+        select {
+            width: 100%;
+            background: #0b1220;
+            color: #e2e8f0;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: .5rem .65rem;
+            font-size: .9rem;
+        }
+        button {
+            background: #2563eb;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            padding: .55rem .85rem;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        button:hover { background: #1d4ed8; }
+        .flash {
+            border-radius: 8px;
+            padding: .55rem .7rem;
+            margin-bottom: .55rem;
+            font-size: .86rem;
+        }
+        .flash.error { background: rgba(239, 68, 68, .2); border: 1px solid rgba(239, 68, 68, .45); }
+        .flash.success { background: rgba(34, 197, 94, .2); border: 1px solid rgba(34, 197, 94, .45); }
+        .status-line {
+            font-size: .84rem;
+            color: #94a3b8;
+            margin-top: .25rem;
+        }
+        .preview {
+            width: 100%;
+            background: #000;
+            border: 1px solid #334155;
+            border-radius: 10px;
+            min-height: 240px;
+            object-fit: contain;
+        }
+    </style>
+</head>
+<body>
+    <header class="topbar">
+        <strong>Guard Panel: Camera Assignment</strong>
+        <nav>
+            <a href="/">Dashboard</a>
+            <a href="/users">Users</a>
+            <a href="/guard/review">Flagged Review</a>
+            <a href="/logbook">Logbook</a>
+            <a href="/logout">Logout</a>
+        </nav>
+    </header>
+
+    <main class="container">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="flash {{ category }}">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <section class="card">
+            <h1 style="margin-bottom:.35rem;">Assign Entry and Exit Cameras</h1>
+            <p class="muted">
+                Pick an entry camera and optionally an exit camera. If exit is left blank or duplicates entry,
+                the system auto-assigns the remaining detected device.
+            </p>
+
+            <form method="post" action="/guard/device">
+                <div class="grid-2">
+                    <div>
+                        <label for="entrance_device">Entry Camera Device</label>
+                        <select id="entrance_device" name="entrance_device">
+                            <option value="">keep current</option>
+                            {% for device in devices %}
+                                <option
+                                    value="{{ device.index }}"
+                                    {% if assignments.entrance is not none and assignments.entrance == device.index %}selected{% endif %}
+                                >
+                                    {{ device.name }} (/dev/video{{ device.index }})
+                                </option>
+                            {% endfor %}
+                        </select>
+                        <div class="status-line">Current entry assignment: {{ assignments.entrance if assignments.entrance is not none else 'not assigned' }}</div>
+                    </div>
+
+                    <div>
+                        <label for="exit_device">Exit Camera Device</label>
+                        <select id="exit_device" name="exit_device">
+                            <option value="">auto (remaining device)</option>
+                            {% for device in devices %}
+                                <option
+                                    value="{{ device.index }}"
+                                    {% if assignments.exit is not none and assignments.exit == device.index %}selected{% endif %}
+                                >
+                                    {{ device.name }} (/dev/video{{ device.index }})
+                                </option>
+                            {% endfor %}
+                        </select>
+                        <div class="status-line">Current exit assignment: {{ assignments.exit if assignments.exit is not none else 'not assigned' }}</div>
+                    </div>
+                </div>
+
+                <div style="margin-top:.9rem; display:flex; gap:.55rem; align-items:center; flex-wrap:wrap;">
+                    <button type="submit">Save Assignment</button>
+                    <span class="muted">Saved config: entry={{ saved_assignments.get('entrance', 'none') }}, exit={{ saved_assignments.get('exit', 'none') }}</span>
+                </div>
+            </form>
+        </section>
+
+        <section class="card">
+            <h2 style="margin-bottom:.45rem;">Live Preview</h2>
+            <div class="grid-2">
+                <div>
+                    <h3 style="margin-bottom:.45rem;">Entry Stream</h3>
+                    <img class="preview" src="/video/entrance" alt="Entry preview">
+                </div>
+                <div>
+                    <h3 style="margin-bottom:.45rem;">Exit Stream</h3>
+                    <img class="preview" src="/video/exit" alt="Exit preview">
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        (function () {
+            const entrySelect = document.getElementById('entrance_device');
+            const exitSelect = document.getElementById('exit_device');
+
+            function autoPickExit() {
+                const entryValue = entrySelect.value;
+                if (!entryValue) return;
+
+                if (!exitSelect.value || exitSelect.value === entryValue) {
+                    for (const option of exitSelect.options) {
+                        if (option.value && option.value !== entryValue) {
+                            exitSelect.value = option.value;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            entrySelect.addEventListener('change', autoPickExit);
+        })();
+    </script>
+</body>
+</html>

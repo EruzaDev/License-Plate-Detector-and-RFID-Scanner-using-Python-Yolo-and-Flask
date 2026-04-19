@@ -15,7 +15,11 @@ import time
 import threading
 import sqlite3
 import re
+import csv
+import io
+import importlib
 from datetime import timedelta
+from functools import wraps
 from typing import Any
 
 import cv2
@@ -47,6 +51,11 @@ from database import (
     discard_manual_input,
     get_pending_rfid_verifications,
     verify_detection_rfid,
+    get_flagged_detections,
+    review_flagged_detection,
+    get_logbook_entries,
+    save_device_config,
+    get_device_config,
 )
 from camera_system import (start_cameras, latest_frames, frame_locks,
                            list_video_devices, get_camera_assignments,
@@ -235,6 +244,41 @@ def _is_authenticated() -> bool:
     return bool(auth_user) and str(auth_user.get("role", "")).lower() in {"superadmin", "guard"}
 
 
+def _login_required(view_func):
+    """Require a logged-in superadmin/guard session for a route."""
+    @wraps(view_func)
+    def wrapped(*args, **kwargs):
+        if _is_authenticated():
+            return view_func(*args, **kwargs)
+
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "Authentication required."}), 401
+        return redirect(url_for("login", next=request.full_path.rstrip("?")))
+
+    return wrapped
+
+
+def _role_required(*allowed_roles: str):
+    """Require at least one role for a route."""
+    normalized = {str(role).strip().lower() for role in allowed_roles if role}
+
+    def decorator(view_func):
+        @wraps(view_func)
+        @_login_required
+        def wrapped(*args, **kwargs):
+            role = _current_role()
+            if normalized and role not in normalized:
+                if request.path.startswith("/api/"):
+                    return jsonify({"error": "Forbidden."}), 403
+                flash("You do not have permission to access this page.", "error")
+                return redirect(url_for("dashboard"))
+            return view_func(*args, **kwargs)
+
+        return wrapped
+
+    return decorator
+
+
 @app.context_processor
 def inject_auth_user():
     return {"auth_user": session.get("auth_user")}
@@ -292,6 +336,165 @@ def _build_capture_url(image_path: str | None) -> str | None:
     return f"/captures/{filename}"
 
 
+def _format_confidence_percent(value: Any) -> str:
+    try:
+        return f"{float(value) * 100.0:.1f}%"
+    except (TypeError, ValueError):
+        return "0.0%"
+
+
+def _export_logbook_csv(entries: list[dict[str, Any]]) -> Response:
+    """Build a CSV response for filtered logbook rows."""
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    writer.writerow([
+        "Timestamp",
+        "Vehicle Plate",
+        "Owner Name",
+        "Direction",
+        "Camera",
+        "RFID Status",
+        "OCR Confidence",
+        "Entry Source",
+        "Status",
+    ])
+
+    for row in entries:
+        writer.writerow([
+            row.get("timestamp", ""),
+            row.get("plate_number", ""),
+            row.get("owner_name", ""),
+            row.get("direction", ""),
+            row.get("camera", ""),
+            row.get("rfid_status", ""),
+            _format_confidence_percent(row.get("confidence", 0.0)),
+            row.get("entry_source", ""),
+            row.get("status", ""),
+        ])
+
+    filename = f"logbook_{time.strftime('%Y%m%d_%H%M%S')}.csv"
+    response = Response(output.getvalue(), mimetype="text/csv")
+    response.headers["Content-Disposition"] = f"attachment; filename={filename}"
+    return response
+
+
+def _clip_pdf_text(value: Any, max_len: int) -> str:
+    text = str(value or "")
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 3] + "..."
+
+
+def _export_logbook_pdf(entries: list[dict[str, Any]], filters: dict[str, str]) -> Response:
+    """Build a simple PDF report for filtered logbook rows."""
+    try:
+        pagesizes_mod = importlib.import_module("reportlab.lib.pagesizes")
+        units_mod = importlib.import_module("reportlab.lib.units")
+        canvas_mod = importlib.import_module("reportlab.pdfgen.canvas")
+        page_a4 = pagesizes_mod.A4
+        page_landscape = pagesizes_mod.landscape
+        mm = units_mod.mm
+        canvas_cls = canvas_mod.Canvas
+    except Exception:
+        return Response(
+            "PDF export requires reportlab. Install dependencies from requirements.txt.",
+            status=503,
+            mimetype="text/plain",
+        )
+
+    buffer = io.BytesIO()
+    page_size = page_landscape(page_a4)
+    pdf = canvas_cls(buffer, pagesize=page_size)
+    width, height = page_size
+
+    left = 10 * mm
+    right = width - 10 * mm
+    row_height = 6 * mm
+
+    def draw_header(page_no: int):
+        y = height - 12 * mm
+        pdf.setFont("Helvetica-Bold", 12)
+        pdf.drawString(left, y, "LPR System Logbook Report")
+        pdf.setFont("Helvetica", 8)
+        pdf.drawRightString(right, y, f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+        filter_text = (
+            f"Filters: from={filters.get('date_from') or 'any'} | "
+            f"to={filters.get('date_to') or 'any'} | "
+            f"direction={filters.get('direction') or 'any'} | "
+            f"status={filters.get('status') or 'any'} | "
+            f"user={filters.get('user') or 'any'}"
+        )
+        pdf.drawString(left, y - 5 * mm, _clip_pdf_text(filter_text, 140))
+        pdf.drawRightString(right, y - 5 * mm, f"Page {page_no}")
+
+        header_y = y - 11 * mm
+        pdf.setFont("Helvetica-Bold", 8)
+        headers = [
+            ("Timestamp", left),
+            ("Plate", left + 34 * mm),
+            ("Owner", left + 54 * mm),
+            ("Dir", left + 92 * mm),
+            ("Cam", left + 104 * mm),
+            ("RFID", left + 118 * mm),
+            ("Conf", left + 138 * mm),
+            ("Source", left + 152 * mm),
+            ("Status", left + 170 * mm),
+        ]
+        for title, x in headers:
+            pdf.drawString(x, header_y, title)
+        pdf.line(left, header_y - 1.5 * mm, right, header_y - 1.5 * mm)
+        return header_y - 4 * mm
+
+    page_no = 1
+    y = draw_header(page_no)
+    pdf.setFont("Helvetica", 7)
+
+    for row in entries:
+        if y <= 12 * mm:
+            pdf.showPage()
+            page_no += 1
+            y = draw_header(page_no)
+            pdf.setFont("Helvetica", 7)
+
+        values = [
+            _clip_pdf_text(row.get("timestamp", ""), 18),
+            _clip_pdf_text(row.get("plate_number", ""), 10),
+            _clip_pdf_text(row.get("owner_name", "-"), 22),
+            _clip_pdf_text(row.get("direction", ""), 5),
+            _clip_pdf_text(row.get("camera", ""), 7),
+            _clip_pdf_text(row.get("rfid_status", ""), 10),
+            _clip_pdf_text(_format_confidence_percent(row.get("confidence", 0.0)), 7),
+            _clip_pdf_text(row.get("entry_source", ""), 8),
+            _clip_pdf_text(row.get("status", ""), 10),
+        ]
+
+        x_positions = [
+            left,
+            left + 34 * mm,
+            left + 54 * mm,
+            left + 92 * mm,
+            left + 104 * mm,
+            left + 118 * mm,
+            left + 138 * mm,
+            left + 152 * mm,
+            left + 170 * mm,
+        ]
+
+        for value, x in zip(values, x_positions):
+            pdf.drawString(x, y, value)
+
+        y -= row_height
+
+    pdf.save()
+    payload = buffer.getvalue()
+    filename = f"logbook_{time.strftime('%Y%m%d_%H%M%S')}.pdf"
+    response = Response(payload, mimetype="application/pdf")
+    response.headers["Content-Disposition"] = f"attachment; filename={filename}"
+    return response
+
+
 # ---------------------------------------------------------------------------
 # MJPEG streaming
 # ---------------------------------------------------------------------------
@@ -327,20 +530,17 @@ def _generate_mjpeg(camera_name: str):
 # Routes
 # ---------------------------------------------------------------------------
 @app.route("/")
+@_login_required
 def dashboard():
     """Render the main dashboard page."""
     return render_template("dashboard.html")
 
 
 @app.route("/users", methods=["GET"])
+@_role_required("superadmin", "guard")
 def users_management():
     """User and guard creation screen for superadmin/guard roles."""
-    if not _is_authenticated():
-        return redirect(url_for("login", next="/users"))
-
     role = _current_role()
-    if role not in {"superadmin", "guard"}:
-        return redirect(url_for("dashboard"))
 
     users = _get_auth_users()
     return render_template(
@@ -352,14 +552,10 @@ def users_management():
 
 
 @app.route("/users/create", methods=["POST"])
+@_role_required("superadmin", "guard")
 def users_create():
     """Create user accounts according to creator role permissions."""
-    if not _is_authenticated():
-        return redirect(url_for("login", next="/users"))
-
     creator_role = _current_role()
-    if creator_role not in {"superadmin", "guard"}:
-        return redirect(url_for("dashboard"))
 
     name = request.form.get("name", "").strip()
     credential_raw = request.form.get("username", "") or request.form.get("email", "")
@@ -440,6 +636,135 @@ def users_create():
 
     flash(f"{new_role.title()} account created successfully.", "success")
     return redirect(url_for("users_management"))
+
+
+@app.route("/guard/device", methods=["GET", "POST"])
+@_role_required("superadmin", "guard")
+def guard_device():
+    """Dedicated guard page for entrance/exit camera assignment."""
+    if request.method == "POST":
+        devices = list_video_devices()
+        available_indices = {int(d["index"]) for d in devices}
+
+        entrance_device = request.form.get("entrance_device", type=int)
+        exit_device = request.form.get("exit_device", type=int)
+
+        if entrance_device is not None and entrance_device not in available_indices:
+            flash("Selected entrance camera device is not available.", "error")
+            return redirect(url_for("guard_device"))
+        if exit_device is not None and exit_device not in available_indices:
+            flash("Selected exit camera device is not available.", "error")
+            return redirect(url_for("guard_device"))
+
+        if entrance_device is not None and (exit_device is None or exit_device == entrance_device):
+            remaining = [idx for idx in sorted(available_indices) if idx != entrance_device]
+            if remaining:
+                exit_device = remaining[0]
+
+        pending_updates: dict[str, int] = {}
+        if entrance_device is not None:
+            pending_updates["entrance"] = int(entrance_device)
+        if exit_device is not None:
+            pending_updates["exit"] = int(exit_device)
+
+        if not pending_updates:
+            flash("Select at least one camera device to assign.", "error")
+            return redirect(url_for("guard_device"))
+
+        for camera_name, device_index in pending_updates.items():
+            reassign_camera(camera_name, device_index)
+            save_device_config(camera_name, device_index)
+
+        flash("Camera assignments saved.", "success")
+        return redirect(url_for("guard_device"))
+
+    devices = list_video_devices()
+    runtime_assignments = get_camera_assignments()
+    saved_assignments = get_device_config()
+    assignments = {
+        "entrance": runtime_assignments.get("entrance", saved_assignments.get("entrance")),
+        "exit": runtime_assignments.get("exit", saved_assignments.get("exit")),
+    }
+
+    return render_template(
+        "guard_device.html",
+        devices=devices,
+        assignments=assignments,
+        saved_assignments=saved_assignments,
+    )
+
+
+@app.route("/guard/review", methods=["GET"])
+@_role_required("superadmin", "guard")
+def guard_review():
+    """Review detections that require manual guard action."""
+    entries = get_flagged_detections(limit=250)
+    for row in entries:
+        row["image_url"] = _build_capture_url(row.get("image_path"))
+        row["direction"] = "ENTRY" if str(row.get("camera", "")).lower() == "entrance" else "EXIT"
+
+    return render_template("guard_review.html", entries=entries)
+
+
+@app.route("/guard/review/<int:detection_id>/action", methods=["POST"])
+@_role_required("superadmin", "guard")
+def guard_review_action(detection_id: int):
+    """Apply review actions: confirm, correct, or reject."""
+    action = str(request.form.get("action", "")).strip().lower()
+    corrected_plate = request.form.get("corrected_plate", "")
+
+    try:
+        result = review_flagged_detection(
+            detection_id=detection_id,
+            action=action,
+            corrected_plate=corrected_plate,
+        )
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("guard_review"))
+
+    if result is None:
+        flash("Detection not found.", "error")
+        return redirect(url_for("guard_review"))
+
+    if action == "correct":
+        register_plate(result["plate_number"], owner_name=None)
+
+    flash("Flagged entry reviewed successfully.", "success")
+    return redirect(url_for("guard_review"))
+
+
+@app.route("/logbook", methods=["GET"])
+@_role_required("superadmin", "guard")
+def logbook():
+    """Comprehensive logbook with filters and CSV/PDF export."""
+    filters = {
+        "date_from": request.args.get("date_from", "").strip(),
+        "date_to": request.args.get("date_to", "").strip(),
+        "direction": request.args.get("direction", "").strip().upper(),
+        "status": request.args.get("status", "").strip().upper(),
+        "user": request.args.get("user", "").strip(),
+    }
+    export_format = request.args.get("export", "").strip().lower()
+
+    entries = get_logbook_entries(
+        date_from=filters["date_from"] or None,
+        date_to=filters["date_to"] or None,
+        direction=filters["direction"] or None,
+        status=filters["status"] or None,
+        user=filters["user"] or None,
+        limit=None if export_format in {"csv", "pdf"} else 500,
+    )
+    for row in entries:
+        row["image_url"] = _build_capture_url(row.get("image_path"))
+        row["confidence_percent"] = _format_confidence_percent(row.get("confidence", 0.0))
+
+    if export_format == "csv":
+        return _export_logbook_csv(entries)
+    if export_format == "pdf":
+        return _export_logbook_pdf(entries, filters)
+
+    return render_template("logbook.html", entries=entries, filters=filters)
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -610,9 +935,17 @@ def serve_capture(filename: str):
 @app.route("/api/devices")
 def api_devices():
     """Return available video devices and current camera assignments."""
+    runtime_assignments = get_camera_assignments()
+    saved_assignments = get_device_config()
+    merged_assignments = {
+        "entrance": runtime_assignments.get("entrance", saved_assignments.get("entrance")),
+        "exit": runtime_assignments.get("exit", saved_assignments.get("exit")),
+    }
+
     return jsonify({
         "devices": list_video_devices(),
-        "assignments": get_camera_assignments(),
+        "assignments": merged_assignments,
+        "saved_assignments": saved_assignments,
     })
 
 
@@ -635,6 +968,7 @@ def api_assign_camera():
         return jsonify({"error": "device_index must be a non-negative integer."}), 400
 
     reassign_camera(camera_name, device_index)
+    save_device_config(camera_name, int(device_index))
     return jsonify({"ok": True, "camera": camera_name, "device_index": device_index})
 
 

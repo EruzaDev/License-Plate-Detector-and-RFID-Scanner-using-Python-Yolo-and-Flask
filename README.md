@@ -14,6 +14,10 @@ Raspberry Pi 5.
 - Unknown OCR results are queued for required manual plate input (not logged as UNKNOWN)
 - Pending manual captures can be explicitly discarded from the dashboard prompt
 - Wrong detections can be corrected from the dashboard; corrections are learned and reused by OCR
+- Role-based login for `superadmin` and `guard` sessions
+- Dedicated guard camera-assignment page with saved device mapping
+- Dedicated flagged-entry review workflow (confirm / correct / reject)
+- Comprehensive logbook with filters and CSV/PDF export
 - SQLite database logs every detection
 - Dark-themed Flask dashboard with live feeds, stats, and date filtering
 
@@ -35,7 +39,10 @@ lpr_system/
 ├── app.py               # Flask web server + dashboard
 ├── download_models.py   # one-time model download script
 ├── templates/
-│   └── dashboard.html   # dark-themed dashboard UI
+│   ├── dashboard.html   # main operations dashboard
+│   ├── guard_device.html
+│   ├── guard_review.html
+│   └── logbook.html
 ├── models/
 │   └── license_plate_detector.pt  # auto-downloaded by download_models.py
 ├── captures/            # saved plate images
@@ -150,6 +157,14 @@ Frame from webcam
 - **Stats cards** — total / today / entrance / exit counts
 - **Detection log** — plate number, camera, timestamp, confidence, thumbnail
 - **Date filter** — view history for any specific date
+
+## Phase 3 Web Routes
+
+- `/login` and `/logout` for session auth
+- `/users` for superadmin/guard account creation workflow
+- `/guard/device` for entry/exit camera assignment and preview
+- `/guard/review` for flagged detection review actions
+- `/logbook` for filterable logs with export controls (`?export=csv` or `?export=pdf`)
 
 ## Configuration
 

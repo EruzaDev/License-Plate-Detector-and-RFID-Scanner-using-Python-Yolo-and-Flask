@@ -9,6 +9,7 @@ import threading
 import re
 from difflib import SequenceMatcher
 from datetime import datetime
+from typing import Any
 
 # Path to the database file (sits next to this script)
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lpr_system.db")
@@ -160,6 +161,18 @@ def init_db():
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_ocr_feedback_wrong
         ON ocr_feedback (wrong_input)
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS device_config (
+            camera TEXT PRIMARY KEY,
+            device_index INTEGER NOT NULL,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_device_config_updated_at
+        ON device_config (updated_at DESC)
     """)
     conn.commit()
 
@@ -640,6 +653,274 @@ def correct_detection_plate(detection_id: int, corrected_plate: str) -> dict | N
         "old_plate_number": previous_plate,
         "plate_number": normalized_plate,
     }
+
+
+def get_flagged_detections(limit: int = 200) -> list:
+    """Return detections that need guard review."""
+    conn = _get_connection()
+    rows = conn.execute(
+        """
+        SELECT
+            d.id,
+            d.timestamp,
+            d.plate_number,
+            d.ocr_raw,
+            d.ocr_corrected,
+            d.match_status,
+            d.rfid_status,
+            d.confidence,
+            d.camera,
+            d.image_path,
+            COALESCE(rp.owner_name, '') AS owner_name
+        FROM detections d
+        LEFT JOIN registered_plates rp
+            ON rp.plate_number = d.plate_number
+        WHERE (
+            UPPER(COALESCE(d.match_status, '')) IN ('NEEDS_REVIEW', 'NO_MATCH')
+            OR UPPER(COALESCE(d.rfid_status, '')) = 'MISMATCH'
+        )
+          AND UPPER(COALESCE(d.match_status, '')) NOT LIKE 'REVIEWED_%'
+        ORDER BY d.timestamp DESC, d.id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def review_flagged_detection(
+    detection_id: int,
+    action: str,
+    corrected_plate: str | None = None,
+) -> dict | None:
+    """
+    Review a flagged detection.
+    action: confirm | correct | reject
+    """
+    if not isinstance(detection_id, int) or detection_id <= 0:
+        raise ValueError("detection_id must be a positive integer.")
+
+    normalized_action = str(action or "").strip().lower()
+    if normalized_action not in {"confirm", "correct", "reject"}:
+        raise ValueError("action must be one of: confirm, correct, reject.")
+
+    conn = _get_connection()
+    row = conn.execute(
+        """
+        SELECT id, plate_number, ocr_raw, ocr_corrected
+        FROM detections
+        WHERE id = ?
+        """,
+        (detection_id,),
+    ).fetchone()
+    if row is None:
+        return None
+
+    previous_plate = _normalize_plate(row["plate_number"])
+
+    if normalized_action == "confirm":
+        conn.execute(
+            """
+            UPDATE detections
+            SET match_status = 'REVIEWED_CONFIRMED'
+            WHERE id = ?
+            """,
+            (detection_id,),
+        )
+        conn.commit()
+        return {
+            "detection_id": detection_id,
+            "action": "confirm",
+            "status": "REVIEWED",
+            "plate_number": previous_plate,
+        }
+
+    if normalized_action == "reject":
+        conn.execute(
+            """
+            UPDATE detections
+            SET match_status = 'REVIEWED_REJECTED'
+            WHERE id = ?
+            """,
+            (detection_id,),
+        )
+        conn.commit()
+        return {
+            "detection_id": detection_id,
+            "action": "reject",
+            "status": "REVIEWED",
+            "plate_number": previous_plate,
+        }
+
+    normalized_plate = _normalize_plate(corrected_plate)
+    if not normalized_plate or normalized_plate == "UNKNOWN":
+        raise ValueError("corrected_plate is required for action=correct.")
+
+    conn.execute(
+        """
+        UPDATE detections
+        SET plate_number = ?,
+            ocr_corrected = ?,
+            plate_valid = 1,
+            matched_plate = ?,
+            match_score = 100.0,
+            match_status = 'REVIEWED_CORRECTED'
+        WHERE id = ?
+        """,
+        (normalized_plate, normalized_plate, normalized_plate, detection_id),
+    )
+    conn.commit()
+
+    for wrong_value in (previous_plate, row["ocr_corrected"], row["ocr_raw"]):
+        if record_ocr_feedback(wrong_value, normalized_plate, source="guard_review"):
+            break
+
+    return {
+        "detection_id": detection_id,
+        "action": "correct",
+        "status": "REVIEWED",
+        "old_plate_number": previous_plate,
+        "plate_number": normalized_plate,
+    }
+
+
+def get_logbook_entries(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    direction: str | None = None,
+    status: str | None = None,
+    user: str | None = None,
+    limit: int | None = 500,
+) -> list:
+    """Return logbook rows with Phase 3 fields and filters."""
+    conn = _get_connection()
+
+    status_case = (
+        "CASE "
+        "WHEN UPPER(COALESCE(d.match_status, '')) LIKE 'REVIEWED_%' THEN 'REVIEWED' "
+        "WHEN UPPER(COALESCE(d.match_status, '')) IN ('NEEDS_REVIEW', 'NO_MATCH') "
+        "     OR UPPER(COALESCE(d.rfid_status, '')) = 'MISMATCH' THEN 'FLAGGED' "
+        "ELSE 'OK' END"
+    )
+    direction_case = (
+        "CASE "
+        "WHEN LOWER(COALESCE(d.camera, '')) = 'entrance' THEN 'ENTRY' "
+        "WHEN LOWER(COALESCE(d.camera, '')) = 'exit' THEN 'EXIT' "
+        "ELSE UPPER(COALESCE(d.camera, 'UNKNOWN')) END"
+    )
+    source_case = (
+        "CASE "
+        "WHEN UPPER(COALESCE(d.match_status, '')) IN "
+        "('MANUAL_ENTRY', 'MANUAL_CORRECTION', 'REVIEWED_CONFIRMED', "
+        " 'REVIEWED_CORRECTED', 'REVIEWED_REJECTED') "
+        "THEN 'MANUAL' ELSE 'AUTO' END"
+    )
+
+    where_clauses: list[str] = []
+    params: list[Any] = []
+
+    if date_from:
+        where_clauses.append("d.timestamp >= ?")
+        params.append(f"{date_from} 00:00:00")
+
+    if date_to:
+        where_clauses.append("d.timestamp <= ?")
+        params.append(f"{date_to} 23:59:59")
+
+    direction_norm = str(direction or "").strip().upper()
+    if direction_norm == "ENTRY":
+        where_clauses.append("LOWER(COALESCE(d.camera, '')) = 'entrance'")
+    elif direction_norm == "EXIT":
+        where_clauses.append("LOWER(COALESCE(d.camera, '')) = 'exit'")
+
+    status_norm = str(status or "").strip().upper()
+    if status_norm in {"OK", "FLAGGED", "REVIEWED"}:
+        where_clauses.append(f"{status_case} = ?")
+        params.append(status_norm)
+
+    user_query = str(user or "").strip()
+    if user_query:
+        where_clauses.append(
+            "(COALESCE(rp.owner_name, '') LIKE ? OR d.plate_number LIKE ?)"
+        )
+        like = f"%{user_query}%"
+        params.extend([like, like])
+
+    sql = f"""
+        SELECT
+            d.id,
+            d.timestamp,
+            d.plate_number,
+            d.ocr_raw,
+            d.ocr_corrected,
+            d.confidence,
+            d.camera,
+            d.rfid_status,
+            d.match_status,
+            d.image_path,
+            COALESCE(rp.owner_name, '') AS owner_name,
+            {direction_case} AS direction,
+            {source_case} AS entry_source,
+            {status_case} AS status
+        FROM detections d
+        LEFT JOIN registered_plates rp
+            ON rp.plate_number = d.plate_number
+    """
+
+    if where_clauses:
+        sql += " WHERE " + " AND ".join(where_clauses)
+
+    sql += " ORDER BY d.timestamp DESC, d.id DESC"
+
+    if limit is not None and limit > 0:
+        sql += " LIMIT ?"
+        params.append(int(limit))
+
+    rows = conn.execute(sql, tuple(params)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def save_device_config(camera: str, device_index: int) -> None:
+    """Persist camera -> device index assignment."""
+    camera_name = str(camera or "").strip().lower()
+    if camera_name not in {"entrance", "exit"}:
+        raise ValueError("camera must be 'entrance' or 'exit'.")
+    if not isinstance(device_index, int) or device_index < 0:
+        raise ValueError("device_index must be a non-negative integer.")
+
+    conn = _get_connection()
+    conn.execute(
+        """
+        INSERT INTO device_config (camera, device_index, updated_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(camera) DO UPDATE SET
+            device_index = excluded.device_index,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (camera_name, int(device_index)),
+    )
+    conn.commit()
+
+
+def get_device_config() -> dict[str, int]:
+    """Return persisted camera assignments."""
+    conn = _get_connection()
+    rows = conn.execute(
+        """
+        SELECT camera, device_index
+        FROM device_config
+        WHERE camera IN ('entrance', 'exit')
+        """
+    ).fetchall()
+
+    assignments: dict[str, int] = {}
+    for row in rows:
+        camera_name = str(row["camera"]).strip().lower()
+        device_index = row["device_index"]
+        if camera_name in {"entrance", "exit"} and isinstance(device_index, int):
+            if device_index >= 0:
+                assignments[camera_name] = int(device_index)
+    return assignments
 
 
 def discard_manual_input(manual_input_id: int) -> dict | None:

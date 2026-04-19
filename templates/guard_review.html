@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Guard Flagged Review</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+        }
+        .topbar {
+            background: #111827;
+            border-bottom: 1px solid #1f2937;
+            padding: .8rem 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: .8rem;
+            flex-wrap: wrap;
+        }
+        .topbar nav { display: flex; gap: .5rem; flex-wrap: wrap; }
+        .topbar a {
+            color: #cbd5e1;
+            text-decoration: none;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: .3rem .55rem;
+            font-size: .82rem;
+        }
+        .topbar a:hover { border-color: #475569; color: #fff; }
+        .container {
+            max-width: 1260px;
+            margin: 0 auto;
+            padding: 1rem;
+        }
+        .card {
+            background: #111827;
+            border: 1px solid #1f2937;
+            border-radius: 12px;
+            padding: 1rem;
+        }
+        .flash {
+            border-radius: 8px;
+            padding: .55rem .7rem;
+            margin-bottom: .55rem;
+            font-size: .86rem;
+        }
+        .flash.error { background: rgba(239, 68, 68, .2); border: 1px solid rgba(239, 68, 68, .45); }
+        .flash.success { background: rgba(34, 197, 94, .2); border: 1px solid rgba(34, 197, 94, .45); }
+        .muted { color: #94a3b8; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 980px;
+        }
+        th, td {
+            border-bottom: 1px solid #1e293b;
+            padding: .6rem .55rem;
+            text-align: left;
+            vertical-align: top;
+            font-size: .84rem;
+        }
+        th {
+            color: #94a3b8;
+            text-transform: uppercase;
+            font-size: .74rem;
+            letter-spacing: .03em;
+            background: #0b1220;
+        }
+        .table-wrap { overflow-x: auto; }
+        .thumb {
+            width: 88px;
+            height: 58px;
+            object-fit: cover;
+            border-radius: 8px;
+            border: 1px solid #334155;
+            background: #000;
+        }
+        .status-pill {
+            border-radius: 999px;
+            padding: .12rem .5rem;
+            font-size: .72rem;
+            border: 1px solid #7f1d1d;
+            color: #fecaca;
+            background: rgba(127, 29, 29, .35);
+            display: inline-block;
+        }
+        .actions {
+            display: grid;
+            gap: .4rem;
+            min-width: 260px;
+        }
+        .action-row {
+            display: flex;
+            gap: .35rem;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .action-row input {
+            background: #020617;
+            border: 1px solid #334155;
+            color: #e2e8f0;
+            border-radius: 8px;
+            padding: .38rem .45rem;
+            min-width: 130px;
+            text-transform: uppercase;
+        }
+        button {
+            border: none;
+            border-radius: 8px;
+            padding: .36rem .55rem;
+            cursor: pointer;
+            font-size: .78rem;
+            font-weight: 600;
+            color: #fff;
+        }
+        .btn-confirm { background: #059669; }
+        .btn-correct { background: #2563eb; }
+        .btn-reject { background: #dc2626; }
+    </style>
+</head>
+<body>
+    <header class="topbar">
+        <strong>Guard Panel: Flagged Entries Review</strong>
+        <nav>
+            <a href="/">Dashboard</a>
+            <a href="/guard/device">Device</a>
+            <a href="/users">Users</a>
+            <a href="/logbook">Logbook</a>
+            <a href="/logout">Logout</a>
+        </nav>
+    </header>
+
+    <main class="container">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="flash {{ category }}">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <section class="card">
+            <h1 style="margin-top:0; margin-bottom:.3rem;">Entries Marked for Review</h1>
+            <p class="muted" style="margin-top:0; margin-bottom:.9rem;">
+                Confirm good reads, correct plate values, or reject suspicious detections.
+                After action, each item is marked as reviewed.
+            </p>
+
+            {% if entries %}
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Image</th>
+                                <th>Timestamp</th>
+                                <th>Detected Plate</th>
+                                <th>OCR Raw / Corrected</th>
+                                <th>Owner</th>
+                                <th>Direction</th>
+                                <th>RFID</th>
+                                <th>Review Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for row in entries %}
+                                <tr>
+                                    <td>
+                                        {% if row.image_url %}
+                                            <img class="thumb" src="{{ row.image_url }}" alt="Capture {{ row.id }}">
+                                        {% else %}
+                                            <span class="muted">N/A</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>{{ row.timestamp }}</td>
+                                    <td>
+                                        <strong>{{ row.plate_number }}</strong><br>
+                                        <span class="status-pill">{{ row.match_status }}</span>
+                                    </td>
+                                    <td>
+                                        Raw: {{ row.ocr_raw or '-' }}<br>
+                                        Corrected: {{ row.ocr_corrected or '-' }}
+                                    </td>
+                                    <td>{{ row.owner_name or '-' }}</td>
+                                    <td>{{ row.direction }}</td>
+                                    <td>{{ row.rfid_status or '-' }}</td>
+                                    <td>
+                                        <form class="actions" method="post" action="/guard/review/{{ row.id }}/action">
+                                            <div class="action-row">
+                                                <button class="btn-confirm" type="submit" name="action" value="confirm">Confirm Match</button>
+                                                <button class="btn-reject" type="submit" name="action" value="reject">Reject Entry</button>
+                                            </div>
+                                            <div class="action-row">
+                                                <input
+                                                    type="text"
+                                                    name="corrected_plate"
+                                                    placeholder="ABC1234"
+                                                    title="Corrected plate"
+                                                >
+                                                <button class="btn-correct" type="submit" name="action" value="correct">Correct Plate</button>
+                                            </div>
+                                        </form>
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            {% else %}
+                <p class="muted" style="margin:0;">No flagged entries pending review.</p>
+            {% endif %}
+        </section>
+    </main>
+</body>
+</html>
