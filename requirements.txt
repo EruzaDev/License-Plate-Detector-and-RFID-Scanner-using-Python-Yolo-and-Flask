@@ -7,3 +7,4 @@ easyocr
 opencv-python
 flask
 numpy
+rapidfuzz

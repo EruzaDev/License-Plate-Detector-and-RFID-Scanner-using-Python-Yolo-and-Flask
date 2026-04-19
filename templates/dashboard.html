@@ -301,6 +301,89 @@
             color: #64748b;
         }
 
+        /* ====== Manual input modal ====== */
+        .manual-modal {
+            position: fixed;
+            inset: 0;
+            background: rgba(3, 7, 18, .75);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            padding: 1rem;
+        }
+        .manual-modal.hidden { display: none; }
+        .manual-card {
+            width: min(560px, 100%);
+            background: #111827;
+            border: 1px solid #374151;
+            border-radius: 14px;
+            box-shadow: 0 20px 40px rgba(0,0,0,.45);
+            padding: 1rem;
+        }
+        .manual-card h3 {
+            font-size: 1rem;
+            margin-bottom: .35rem;
+        }
+        .manual-card p {
+            color: #9ca3af;
+            font-size: .84rem;
+            margin-bottom: .65rem;
+        }
+        .manual-preview {
+            width: 100%;
+            max-height: 220px;
+            object-fit: contain;
+            background: #000;
+            border: 1px solid #374151;
+            border-radius: 8px;
+            margin-bottom: .8rem;
+        }
+        .manual-field {
+            display: flex;
+            gap: .55rem;
+            margin-bottom: .55rem;
+        }
+        .manual-field input {
+            flex: 1;
+            background: #0b1220;
+            border: 1px solid #374151;
+            border-radius: 8px;
+            color: #e5e7eb;
+            padding: .55rem .7rem;
+            font-size: .92rem;
+            text-transform: uppercase;
+        }
+        .manual-actions {
+            display: flex;
+            gap: .55rem;
+            justify-content: flex-end;
+        }
+        .btn-manual-save {
+            background: #10b981;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            padding: .5rem .9rem;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        .btn-manual-later {
+            background: #374151;
+            color: #e5e7eb;
+            border: none;
+            border-radius: 8px;
+            padding: .5rem .9rem;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        .manual-error {
+            min-height: 1rem;
+            color: #f87171;
+            font-size: .8rem;
+            margin-top: .35rem;
+        }
+
         /* ====== Footer ====== */
         footer {
             text-align: center;
@@ -410,12 +493,35 @@
 
 </div>
 
+<div class="manual-modal hidden" id="manual-modal">
+    <div class="manual-card">
+        <h3>Manual Plate Entry Required</h3>
+        <p id="manual-meta">OCR could not confidently read the plate.</p>
+        <img id="manual-image" class="manual-preview" alt="Pending capture" style="display:none;">
+        <div class="manual-field">
+            <input id="manual-plate-input" type="text" placeholder="Enter plate (e.g. ABC1234)">
+        </div>
+        <div class="manual-actions">
+            <button class="btn-manual-later" onclick="discardManualCapture()">Discard</button>
+            <button class="btn-manual-save" onclick="submitManualPlate()">Save Plate</button>
+        </div>
+        <div class="manual-error" id="manual-error"></div>
+    </div>
+</div>
+
 <footer>LPR System — Raspberry Pi 5 &middot; YOLOv8 Plate Detector + EasyOCR</footer>
 
 <!-- ====== JavaScript ====== -->
 <script>
     const tbody = document.getElementById('det-body');
     const dateInput = document.getElementById('date-filter');
+    const manualModal = document.getElementById('manual-modal');
+    const manualMeta = document.getElementById('manual-meta');
+    const manualImage = document.getElementById('manual-image');
+    const manualPlateInput = document.getElementById('manual-plate-input');
+    const manualError = document.getElementById('manual-error');
+
+    let manualActiveItem = null;
 
     // ---- Load available video devices and populate selectors ----
     async function loadDevices() {
@@ -594,11 +700,116 @@
         loadDetections();
     }
 
+    function showManualPrompt(item) {
+        manualActiveItem = item;
+        manualMeta.textContent =
+            'Camera: ' + item.camera + ' | Time: ' + item.timestamp +
+            ' | OCR: ' + (item.ocr_corrected || item.ocr_raw || 'UNKNOWN');
+
+        if (item.image_url) {
+            manualImage.src = item.image_url;
+            manualImage.style.display = 'block';
+        } else {
+            manualImage.removeAttribute('src');
+            manualImage.style.display = 'none';
+        }
+
+        manualPlateInput.value = '';
+        manualError.textContent = '';
+        manualModal.classList.remove('hidden');
+        manualPlateInput.focus();
+    }
+
+    function closeManualPrompt() {
+        manualModal.classList.add('hidden');
+        manualActiveItem = null;
+    }
+
+    async function loadPendingManualInputs() {
+        if (manualActiveItem) return;
+
+        try {
+            const res = await fetch('/api/manual_inputs/pending');
+            const data = await res.json();
+            const items = data.items || [];
+            if (items.length > 0) {
+                showManualPrompt(items[0]);
+            }
+        } catch (e) {
+            console.error('Manual inputs error:', e);
+        }
+    }
+
+    async function submitManualPlate() {
+        if (!manualActiveItem) return;
+
+        const plate = manualPlateInput.value.trim().toUpperCase();
+        if (!plate || plate === 'UNKNOWN') {
+            manualError.textContent = 'Enter a valid plate (UNKNOWN is not allowed).';
+            return;
+        }
+
+        manualError.textContent = '';
+        try {
+            const res = await fetch('/api/manual_inputs/' + manualActiveItem.id + '/resolve', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({plate_number: plate}),
+            });
+            const data = await res.json();
+            if (!res.ok || !data.ok) {
+                manualError.textContent = data.error || 'Failed to save manual plate.';
+                return;
+            }
+
+            closeManualPrompt();
+            await loadStats();
+            await loadDetections(dateInput.value || null);
+            await loadPendingManualInputs();
+        } catch (e) {
+            manualError.textContent = 'Network error while saving manual plate.';
+        }
+    }
+
+    async function discardManualCapture() {
+        if (!manualActiveItem) return;
+        const ok = window.confirm('Discard this capture? This will remove it from manual queue.');
+        if (!ok) return;
+
+        manualError.textContent = '';
+        try {
+            const res = await fetch('/api/manual_inputs/' + manualActiveItem.id + '/discard', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({delete_image: true}),
+            });
+            const data = await res.json();
+            if (!res.ok || !data.ok) {
+                manualError.textContent = data.error || 'Failed to discard capture.';
+                return;
+            }
+
+            closeManualPrompt();
+            await loadPendingManualInputs();
+        } catch (e) {
+            manualError.textContent = 'Network error while discarding capture.';
+        }
+    }
+
+    manualPlateInput.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') submitManualPlate();
+    });
+
     // ---- Initial load + auto-refresh ----
     loadDevices();
     loadStats();
     loadDetections();
-    setInterval(() => { loadStats(); loadDetections(dateInput.value || null); }, 5000);
+    loadPendingManualInputs();
+    setInterval(() => {
+        loadStats();
+        loadDetections(dateInput.value || null);
+        loadPendingManualInputs();
+    }, 5000);
 </script>
 
 </body>

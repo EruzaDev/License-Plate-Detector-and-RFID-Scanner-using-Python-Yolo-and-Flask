@@ -12,10 +12,17 @@ Pipeline:
 
 import re
 from collections import Counter
+from difflib import SequenceMatcher
 
 import cv2
 import numpy as np
 import easyocr
+
+try:
+    from rapidfuzz import fuzz, process
+except Exception:  # pragma: no cover - graceful fallback when rapidfuzz is missing
+    fuzz = None
+    process = None
 
 # Initialise the EasyOCR reader once (model load is expensive).
 # English only; GPU disabled for Raspberry Pi 5 (CPU-only).
@@ -24,8 +31,162 @@ _reader = easyocr.Reader(["en"], gpu=False)
 # Regex: keep only alphanumeric characters typical of license plates
 _PLATE_PATTERN = re.compile(r"[^A-Z0-9]")
 
+# PH LTO plate patterns:
+# - Modern: ABC1234
+# - Classic: AB1234
+_PH_MODERN_PATTERN = re.compile(r"^[A-Z]{3}[0-9]{4}$")
+_PH_CLASSIC_PATTERN = re.compile(r"^[A-Z]{2}[0-9]{4}$")
+
+# OCR disambiguation map for common confusions.
+_CHAR_TO_INT = {"O": "0", "I": "1", "S": "5", "G": "6", "B": "8", "Z": "2"}
+_INT_TO_CHAR = {v: k for k, v in _CHAR_TO_INT.items()}
+
 # Minimum plate length to be considered valid
 _MIN_PLATE_LEN = 4
+
+
+def normalize_plate_text(text: str | None) -> str:
+    """Return uppercase alphanumeric-only plate text."""
+    if not text:
+        return ""
+    return _PLATE_PATTERN.sub("", str(text).upper())
+
+
+def _to_letter(ch: str) -> str:
+    """Coerce a character into a letter when OCR produced a lookalike digit."""
+    c = ch.upper()
+    if "A" <= c <= "Z":
+        return c
+    return _INT_TO_CHAR.get(c, c)
+
+
+def _to_digit(ch: str) -> str:
+    """Coerce a character into a digit when OCR produced a lookalike letter."""
+    c = ch.upper()
+    if "0" <= c <= "9":
+        return c
+    return _CHAR_TO_INT.get(c, c)
+
+
+def _coerce_modern_plate(raw: str) -> str:
+    """Convert text to PH modern plate layout (3 letters + 4 digits)."""
+    letters = "".join(_to_letter(ch) for ch in raw[:3])
+    digits = "".join(_to_digit(ch) for ch in raw[3:7])
+    return letters + digits
+
+
+def _coerce_classic_plate(raw: str) -> str:
+    """Convert text to PH classic plate layout (2 letters + 4 digits)."""
+    letters = "".join(_to_letter(ch) for ch in raw[:2])
+    digits = "".join(_to_digit(ch) for ch in raw[2:6])
+    return letters + digits
+
+
+def correct_ph_plate(text: str | None) -> tuple[str, bool, str]:
+    """
+    Apply PH plate cleanup rules and position-aware OCR correction.
+
+    Returns
+    -------
+    tuple[str, bool, str]
+        (corrected_plate_no_space, is_valid, format_name)
+        format_name is one of: MODERN, CLASSIC, INVALID.
+    """
+    cleaned = normalize_plate_text(text)
+    if not cleaned or cleaned == "UNKNOWN":
+        return ("UNKNOWN", False, "INVALID")
+
+    attempts: list[tuple[str, str]] = []
+    if len(cleaned) >= 7:
+        attempts.append(("MODERN", _coerce_modern_plate(cleaned[:7])))
+    if len(cleaned) >= 6:
+        attempts.append(("CLASSIC", _coerce_classic_plate(cleaned[:6])))
+
+    if not attempts:
+        return (cleaned, False, "INVALID")
+
+    for fmt, candidate in attempts:
+        if fmt == "MODERN" and _PH_MODERN_PATTERN.fullmatch(candidate):
+            return (candidate, True, fmt)
+        if fmt == "CLASSIC" and _PH_CLASSIC_PATTERN.fullmatch(candidate):
+            return (candidate, True, fmt)
+
+    # Keep the highest-priority corrected candidate even when invalid.
+    best_fmt, best_candidate = attempts[0]
+    return (best_candidate, False, best_fmt)
+
+
+def format_plate_for_display(plate: str | None) -> str:
+    """Render normalized plate as human-friendly display text with spacing."""
+    cleaned = normalize_plate_text(plate)
+    if _PH_MODERN_PATTERN.fullmatch(cleaned):
+        return f"{cleaned[:3]} {cleaned[3:]}"
+    if _PH_CLASSIC_PATTERN.fullmatch(cleaned):
+        return f"{cleaned[:2]} {cleaned[2:]}"
+    return cleaned or "UNKNOWN"
+
+
+def _fallback_extract_one(query: str, choices: list[str]) -> tuple[str, float] | None:
+    """Fallback fuzzy matching when rapidfuzz is unavailable."""
+    if not choices:
+        return None
+    best_choice = ""
+    best_score = -1.0
+    for choice in choices:
+        score = SequenceMatcher(None, query, choice).ratio() * 100.0
+        if score > best_score:
+            best_choice = choice
+            best_score = score
+    if best_score < 0:
+        return None
+    return (best_choice, round(best_score, 2))
+
+
+def match_plate(
+    ocr_result: str | None,
+    registered_plates: list[str],
+    threshold: float = 85.0,
+    review_threshold: float = 60.0,
+) -> tuple[str | None, float, str]:
+    """
+    Match OCR result against registered plates using Levenshtein similarity.
+
+    Returns
+    -------
+    tuple[str | None, float, str]
+        (best_match, score, status)
+        status: AUTO_MATCHED | NEEDS_REVIEW | NO_MATCH | NO_REGISTRY
+    """
+    query = normalize_plate_text(ocr_result)
+    cleaned_choices = [normalize_plate_text(p) for p in registered_plates if p]
+    cleaned_choices = [p for p in cleaned_choices if p]
+
+    if not cleaned_choices:
+        return (None, 0.0, "NO_REGISTRY")
+    if not query or query == "UNKNOWN":
+        return (None, 0.0, "NO_MATCH")
+
+    best_match: str | None = None
+    score = 0.0
+
+    if process is not None and fuzz is not None:
+        result = process.extractOne(query, cleaned_choices, scorer=fuzz.ratio)
+        if result is not None:
+            best_match, score, _ = result
+            score = float(score)
+    else:
+        fallback = _fallback_extract_one(query, cleaned_choices)
+        if fallback is not None:
+            best_match, score = fallback
+
+    if best_match is None:
+        return (None, 0.0, "NO_MATCH")
+
+    if score >= threshold:
+        return (best_match, round(score, 2), "AUTO_MATCHED")
+    if score >= review_threshold:
+        return (best_match, round(score, 2), "NEEDS_REVIEW")
+    return (None, round(score, 2), "NO_MATCH")
 
 
 # ---------------------------------------------------------------------------

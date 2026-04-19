@@ -10,6 +10,8 @@ Raspberry Pi 5.
 - **Motion detection** (MOG2) → **YOLOv8 plate detection** → **EasyOCR plate reading**
 - YOLO bounding boxes drawn on the live MJPEG stream
 - 10-second cooldown prevents duplicate captures of the same plate
+- Unknown OCR results are queued for required manual plate input (not logged as UNKNOWN)
+- Pending manual captures can be explicitly discarded from the dashboard prompt
 - SQLite database logs every detection
 - Dark-themed Flask dashboard with live feeds, stats, and date filtering
 
@@ -120,6 +122,19 @@ Key settings in `camera_system.py`:
 | `CAPTURE_COOLDOWN` | 10.0    | Seconds between captures per tracked plate |
 | `YOLO_CONF`        | 0.50    | YOLO minimum confidence threshold         |
 | `MIN_PLATE_AREA`   | 700     | Minimum plate bounding-box area (px²)     |
+
+Batch-merge tuning (environment variables):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BATCH_MERGE_IOU` | 0.20 | Overlap threshold for merging near-duplicate detections into one input event |
+| `BATCH_CENTER_DISTANCE` | 80.0 | Pixel distance threshold for merging nearby detections into one input event |
+
+Run with overrides:
+
+```bash
+BATCH_MERGE_IOU=0.30 BATCH_CENTER_DISTANCE=60 python app.py
+```
 
 ## License
 

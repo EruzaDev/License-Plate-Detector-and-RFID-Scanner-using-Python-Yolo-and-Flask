@@ -17,7 +17,16 @@ import threading
 import cv2
 from flask import Flask, Response, render_template, jsonify, request, send_from_directory
 
-from database import get_recent_detections, get_detections_by_date, get_stats
+from database import (
+    get_recent_detections,
+    get_detections_by_date,
+    get_stats,
+    get_registered_plates,
+    register_plate,
+    get_pending_manual_inputs,
+    resolve_manual_input,
+    discard_manual_input,
+)
 from camera_system import (start_cameras, latest_frames, frame_locks,
                            list_video_devices, get_camera_assignments,
                            reassign_camera, stop_camera)
@@ -203,6 +212,98 @@ def api_stop_camera():
 
     stopped = stop_camera(camera_name)
     return jsonify({"ok": stopped, "camera": camera_name})
+
+
+@app.route("/api/registered_plates", methods=["GET"])
+def api_registered_plates():
+    """Return all registered plates used by fuzzy matching."""
+    return jsonify({"plates": get_registered_plates()})
+
+
+@app.route("/api/registered_plates", methods=["POST"])
+def api_register_plate():
+    """
+    Register a plate for fuzzy matching.
+    JSON body: {"plate_number": str, "owner_name": str|optional}
+    """
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Invalid JSON body."}), 400
+
+    plate_number = str(data.get("plate_number", "")).strip()
+    owner_name = data.get("owner_name")
+    if not plate_number:
+        return jsonify({"error": "plate_number is required."}), 400
+
+    ok = register_plate(plate_number=plate_number, owner_name=owner_name)
+    if not ok:
+        return jsonify({"error": "plate_number is invalid."}), 400
+
+    return jsonify({"ok": True, "plate_number": plate_number})
+
+
+@app.route("/api/manual_inputs/pending", methods=["GET"])
+def api_pending_manual_inputs():
+    """Return unresolved manual plate-entry items."""
+    items = get_pending_manual_inputs(limit=20)
+    for item in items:
+        item["image_url"] = _build_capture_url(item.get("image_path"))
+    return jsonify({"items": items})
+
+
+@app.route("/api/manual_inputs/<int:item_id>/resolve", methods=["POST"])
+def api_resolve_manual_input(item_id: int):
+    """
+    Resolve a pending manual-input item by submitting a plate number.
+    JSON body: {"plate_number": "ABC1234"}
+    """
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Invalid JSON body."}), 400
+
+    plate_number = str(data.get("plate_number", "")).strip()
+    if not plate_number:
+        return jsonify({"error": "plate_number is required."}), 400
+
+    try:
+        result = resolve_manual_input(item_id, plate_number)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    if result is None:
+        return jsonify({"error": "Manual input item not found."}), 404
+
+    # Store accepted manual entries in the fuzzy-match registry for future runs.
+    register_plate(result["plate_number"], owner_name=None)
+    return jsonify({"ok": True, **result})
+
+
+@app.route("/api/manual_inputs/<int:item_id>/discard", methods=["POST"])
+def api_discard_manual_input(item_id: int):
+    """
+    Discard a pending manual-input item.
+    Optional JSON body: {"delete_image": true|false} (default true)
+    """
+    data = request.get_json(silent=True) or {}
+    delete_image = bool(data.get("delete_image", True))
+
+    result = discard_manual_input(item_id)
+    if result is None:
+        return jsonify({"error": "Manual input item not found."}), 404
+
+    image_deleted = False
+    if delete_image:
+        filename = _normalize_capture_filename(result.get("image_path"))
+        if filename:
+            abs_path = os.path.join(CAPTURES_DIR, filename)
+            if os.path.isfile(abs_path):
+                try:
+                    os.remove(abs_path)
+                    image_deleted = True
+                except OSError:
+                    image_deleted = False
+
+    return jsonify({"ok": True, "image_deleted": image_deleted, **result})
 
 
 # ---------------------------------------------------------------------------
