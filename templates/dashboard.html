@@ -36,6 +36,23 @@
             display: flex; gap: .7rem; align-items: center;
             font-size: .85rem; color: #94a3b8;
         }
+        .auth-links {
+            display: flex;
+            align-items: center;
+            gap: .6rem;
+            margin-left: .8rem;
+        }
+        .auth-links a {
+            font-size: .8rem;
+            color: #cbd5e1;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: .28rem .55rem;
+        }
+        .auth-links a:hover {
+            color: #fff;
+            border-color: #475569;
+        }
         .status-dot {
             width: 8px; height: 8px; border-radius: 50%;
             background: #22c55e; display: inline-block;
@@ -274,6 +291,10 @@
         }
         .badge.entrance { background: rgba(34,197,94,.15); color: #22c55e; }
         .badge.exit     { background: rgba(249,115,22,.15); color: #f97316; }
+        .badge.rfid-pending { background: rgba(250,204,21,.18); color: #facc15; }
+        .badge.rfid-match   { background: rgba(34,197,94,.18); color: #22c55e; }
+        .badge.rfid-mismatch { background: rgba(239,68,68,.18); color: #ef4444; }
+        .badge.rfid-na { background: rgba(148,163,184,.18); color: #94a3b8; }
         .thumb {
             width: 64px;
             height: 44px;
@@ -384,6 +405,174 @@
             margin-top: .35rem;
         }
 
+        /* ====== Correction modal ====== */
+        .correct-modal {
+            position: fixed;
+            inset: 0;
+            background: rgba(3, 7, 18, .75);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1002;
+            padding: 1rem;
+        }
+        .correct-modal.hidden { display: none; }
+        .correct-card {
+            width: min(560px, 100%);
+            background: #111827;
+            border: 1px solid #374151;
+            border-radius: 14px;
+            box-shadow: 0 20px 40px rgba(0,0,0,.45);
+            padding: 1rem;
+        }
+        .correct-card h3 {
+            font-size: 1rem;
+            margin-bottom: .35rem;
+        }
+        .correct-card p {
+            color: #9ca3af;
+            font-size: .84rem;
+            margin-bottom: .65rem;
+        }
+        .correct-field {
+            display: flex;
+            gap: .55rem;
+            margin-bottom: .55rem;
+        }
+        .correct-field input {
+            flex: 1;
+            background: #0b1220;
+            border: 1px solid #374151;
+            border-radius: 8px;
+            color: #e5e7eb;
+            padding: .55rem .7rem;
+            font-size: .92rem;
+            text-transform: uppercase;
+        }
+        .correct-actions {
+            display: flex;
+            gap: .55rem;
+            justify-content: flex-end;
+        }
+        .btn-correct-save {
+            background: #10b981;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            padding: .5rem .9rem;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        .btn-correct-cancel {
+            background: #374151;
+            color: #e5e7eb;
+            border: none;
+            border-radius: 8px;
+            padding: .5rem .9rem;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        .correct-error {
+            min-height: 1rem;
+            color: #f87171;
+            font-size: .8rem;
+            margin-top: .35rem;
+        }
+        .btn-correct-row {
+            background: #6366f1;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            padding: .35rem .65rem;
+            cursor: pointer;
+            font-size: .78rem;
+            font-weight: 600;
+        }
+        .btn-correct-row:hover { background: #4f46e5; }
+
+        /* ====== RFID modal ====== */
+        .rfid-modal {
+            position: fixed;
+            inset: 0;
+            background: rgba(3, 7, 18, .75);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1001;
+            padding: 1rem;
+        }
+        .rfid-modal.hidden { display: none; }
+        .rfid-card {
+            width: min(560px, 100%);
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 14px;
+            box-shadow: 0 20px 40px rgba(0,0,0,.45);
+            padding: 1rem;
+        }
+        .rfid-card h3 {
+            font-size: 1rem;
+            margin-bottom: .35rem;
+        }
+        .rfid-card p {
+            color: #94a3b8;
+            font-size: .84rem;
+            margin-bottom: .65rem;
+        }
+        .rfid-preview {
+            width: 100%;
+            max-height: 190px;
+            object-fit: contain;
+            background: #000;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            margin-bottom: .8rem;
+        }
+        .rfid-field {
+            display: flex;
+            gap: .55rem;
+            margin-bottom: .55rem;
+        }
+        .rfid-field input {
+            flex: 1;
+            background: #020617;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            color: #e5e7eb;
+            padding: .55rem .7rem;
+            font-size: .92rem;
+            text-transform: uppercase;
+        }
+        .rfid-actions {
+            display: flex;
+            gap: .55rem;
+            justify-content: flex-end;
+        }
+        .btn-rfid-verify {
+            background: #0ea5e9;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            padding: .5rem .9rem;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        .btn-rfid-later {
+            background: #334155;
+            color: #e2e8f0;
+            border: none;
+            border-radius: 8px;
+            padding: .5rem .9rem;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        .rfid-error {
+            min-height: 1rem;
+            color: #f87171;
+            font-size: .8rem;
+            margin-top: .35rem;
+        }
+
         /* ====== Footer ====== */
         footer {
             text-align: center;
@@ -406,6 +595,17 @@
     <div class="status">
         <span class="status-dot"></span>
         System Active
+        <div class="auth-links">
+            {% if auth_user %}
+                <span>{{ auth_user.name }} ({{ auth_user.role }})</span>
+                {% if auth_user.role in ['superadmin', 'guard'] %}
+                    <a href="/users">Users</a>
+                {% endif %}
+                <a href="/logout">Logout</a>
+            {% else %}
+                <a href="/login">Login</a>
+            {% endif %}
+        </div>
     </div>
 </header>
 
@@ -483,14 +683,32 @@
                     <th>Camera</th>
                     <th>Date &amp; Time</th>
                     <th>Confidence</th>
+                    <th>RFID</th>
+                    <th>Actions</th>
                 </tr>
             </thead>
             <tbody id="det-body">
-                <tr><td colspan="5" class="no-data">Loading…</td></tr>
+                <tr><td colspan="7" class="no-data">Loading…</td></tr>
             </tbody>
         </table>
     </div>
 
+</div>
+
+<div class="rfid-modal hidden" id="rfid-modal">
+    <div class="rfid-card">
+        <h3>RFID Verification Required</h3>
+        <p id="rfid-meta">This detection requires RFID UID scan.</p>
+        <img id="rfid-image" class="rfid-preview" alt="RFID pending capture" style="display:none;">
+        <div class="rfid-field">
+            <input id="rfid-uid-input" type="text" placeholder="Scan or enter RFID UID">
+        </div>
+        <div class="rfid-actions">
+            <button class="btn-rfid-later" onclick="dismissRfidPrompt()">Later</button>
+            <button class="btn-rfid-verify" onclick="submitRfidScan()">Verify UID</button>
+        </div>
+        <div class="rfid-error" id="rfid-error"></div>
+    </div>
 </div>
 
 <div class="manual-modal hidden" id="manual-modal">
@@ -509,6 +727,21 @@
     </div>
 </div>
 
+<div class="correct-modal hidden" id="correct-modal">
+    <div class="correct-card">
+        <h3>Correct Detection</h3>
+        <p id="correct-meta">Update wrong plate input to improve OCR learning.</p>
+        <div class="correct-field">
+            <input id="correct-plate-input" type="text" placeholder="Enter corrected plate (e.g. ABC1234)">
+        </div>
+        <div class="correct-actions">
+            <button class="btn-correct-cancel" onclick="closeCorrectionPrompt()">Cancel</button>
+            <button class="btn-correct-save" onclick="submitDetectionCorrection()">Save Correction</button>
+        </div>
+        <div class="correct-error" id="correct-error"></div>
+    </div>
+</div>
+
 <footer>LPR System — Raspberry Pi 5 &middot; YOLOv8 Plate Detector + EasyOCR</footer>
 
 <!-- ====== JavaScript ====== -->
@@ -520,8 +753,20 @@
     const manualImage = document.getElementById('manual-image');
     const manualPlateInput = document.getElementById('manual-plate-input');
     const manualError = document.getElementById('manual-error');
+    const rfidModal = document.getElementById('rfid-modal');
+    const rfidMeta = document.getElementById('rfid-meta');
+    const rfidImage = document.getElementById('rfid-image');
+    const rfidUidInput = document.getElementById('rfid-uid-input');
+    const rfidError = document.getElementById('rfid-error');
+    const correctModal = document.getElementById('correct-modal');
+    const correctMeta = document.getElementById('correct-meta');
+    const correctPlateInput = document.getElementById('correct-plate-input');
+    const correctError = document.getElementById('correct-error');
 
     let manualActiveItem = null;
+    let rfidActiveItem = null;
+    let rfidSnoozeUntil = 0;
+    let correctionActiveItem = null;
 
     // ---- Load available video devices and populate selectors ----
     async function loadDevices() {
@@ -665,7 +910,7 @@
             const rows = await res.json();
 
             if (!rows.length) {
-                tbody.innerHTML = '<tr><td colspan="5" class="no-data">No detections found.</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="7" class="no-data">No detections found.</td></tr>';
                 return;
             }
 
@@ -674,6 +919,13 @@
                     ? `<img class="thumb" src="${r.image_url}" alt="${r.plate_number}" onerror="this.style.display='none'">`
                     : '<span class="no-thumb">N/A</span>';
 
+                const rfidStatus = (r.rfid_status || 'NOT_REQUIRED').toUpperCase();
+                const rfidClass =
+                    rfidStatus === 'MATCH' ? 'rfid-match' :
+                    rfidStatus === 'MISMATCH' ? 'rfid-mismatch' :
+                    rfidStatus === 'NOT_SCANNED' ? 'rfid-pending' : 'rfid-na';
+                const rfidLabel = rfidStatus.replace(/_/g, ' ');
+
                 return `
                 <tr>
                     <td>${thumb}</td>
@@ -681,12 +933,139 @@
                     <td><span class="badge ${r.camera}">${r.camera}</span></td>
                     <td>${r.timestamp}</td>
                     <td class="confidence">${(r.confidence * 100).toFixed(1)}%</td>
+                    <td><span class="badge ${rfidClass}">${rfidLabel}</span></td>
+                    <td>
+                        <button class="btn-correct-row" onclick="showCorrectionPrompt(${r.id}, '${(r.plate_number || '').replace(/'/g, "&#39;")}')">
+                            Correct
+                        </button>
+                    </td>
                 </tr>
                 `;
             }).join('');
         } catch (e) {
             console.error('Detections error:', e);
-            tbody.innerHTML = '<tr><td colspan="5" class="no-data">Error loading data.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="7" class="no-data">Error loading data.</td></tr>';
+        }
+    }
+
+    function showCorrectionPrompt(detectionId, plateNumber) {
+        correctionActiveItem = {id: detectionId, plate_number: plateNumber || ''};
+        correctMeta.textContent =
+            'Detection ID: ' + detectionId + ' | Current plate: ' + (plateNumber || 'UNKNOWN');
+        correctPlateInput.value = (plateNumber || '').toUpperCase();
+        correctError.textContent = '';
+        correctModal.classList.remove('hidden');
+        correctPlateInput.focus();
+    }
+
+    function closeCorrectionPrompt() {
+        correctModal.classList.add('hidden');
+        correctionActiveItem = null;
+    }
+
+    async function submitDetectionCorrection() {
+        if (!correctionActiveItem) return;
+
+        const plate = correctPlateInput.value.trim().toUpperCase();
+        if (!plate || plate === 'UNKNOWN') {
+            correctError.textContent = 'Enter a valid corrected plate.';
+            return;
+        }
+
+        correctError.textContent = '';
+        try {
+            const res = await fetch('/api/detections/' + correctionActiveItem.id + '/correct', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({plate_number: plate}),
+            });
+            const data = await res.json();
+            if (!res.ok || !data.ok) {
+                correctError.textContent = data.error || 'Failed to save correction.';
+                return;
+            }
+
+            closeCorrectionPrompt();
+            await loadDetections(dateInput.value || null);
+            await loadStats();
+        } catch (e) {
+            correctError.textContent = 'Network error while saving correction.';
+        }
+    }
+
+    function showRfidPrompt(item) {
+        rfidActiveItem = item;
+        rfidMeta.textContent =
+            'Plate: ' + item.plate_number + ' | Camera: ' + item.camera +
+            ' | Time: ' + item.timestamp;
+
+        if (item.image_url) {
+            rfidImage.src = item.image_url;
+            rfidImage.style.display = 'block';
+        } else {
+            rfidImage.removeAttribute('src');
+            rfidImage.style.display = 'none';
+        }
+
+        rfidUidInput.value = '';
+        rfidError.textContent = '';
+        rfidModal.classList.remove('hidden');
+        rfidUidInput.focus();
+    }
+
+    function dismissRfidPrompt() {
+        rfidModal.classList.add('hidden');
+        rfidActiveItem = null;
+        rfidSnoozeUntil = Date.now() + 10000;
+    }
+
+    async function loadPendingRfidInputs() {
+        if (manualActiveItem || rfidActiveItem || Date.now() < rfidSnoozeUntil) return;
+
+        try {
+            const res = await fetch('/api/rfid/pending');
+            const data = await res.json();
+            const items = data.items || [];
+            if (items.length > 0) {
+                showRfidPrompt(items[0]);
+            }
+        } catch (e) {
+            console.error('RFID pending error:', e);
+        }
+    }
+
+    async function submitRfidScan() {
+        if (!rfidActiveItem) return;
+
+        const scannedUid = rfidUidInput.value.trim().toUpperCase();
+        if (!scannedUid) {
+            rfidError.textContent = 'RFID UID is required.';
+            return;
+        }
+
+        rfidError.textContent = '';
+        try {
+            const res = await fetch('/api/rfid/verify', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    detection_id: rfidActiveItem.id,
+                    scanned_uid: scannedUid,
+                }),
+            });
+            const data = await res.json();
+            if (!res.ok || !data.ok) {
+                rfidError.textContent = data.error || 'Failed to verify RFID scan.';
+                return;
+            }
+
+            rfidModal.classList.add('hidden');
+            rfidActiveItem = null;
+            await loadStats();
+            await loadDetections(dateInput.value || null);
+            await loadPendingRfidInputs();
+        } catch (e) {
+            rfidError.textContent = 'Network error while verifying RFID.';
         }
     }
 
@@ -800,15 +1179,25 @@
         if (ev.key === 'Enter') submitManualPlate();
     });
 
+    rfidUidInput.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') submitRfidScan();
+    });
+
+    correctPlateInput.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') submitDetectionCorrection();
+    });
+
     // ---- Initial load + auto-refresh ----
     loadDevices();
     loadStats();
     loadDetections();
     loadPendingManualInputs();
+    loadPendingRfidInputs();
     setInterval(() => {
         loadStats();
         loadDetections(dateInput.value || null);
         loadPendingManualInputs();
+        loadPendingRfidInputs();
     }, 5000);
 </script>
 

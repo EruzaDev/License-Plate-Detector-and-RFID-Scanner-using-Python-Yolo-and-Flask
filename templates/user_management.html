@@ -1,0 +1,609 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>User Management</title>
+    <style>
+        :root {
+            --bg: #0f1117;
+            --card: #171a2a;
+            --muted: #94a3b8;
+            --text: #e2e8f0;
+            --border: #2d3348;
+            --ok: #22c55e;
+            --error: #ef4444;
+            --primary: #3b82f6;
+            --secondary: #4f46e5;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: "Segoe UI", Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.4;
+        }
+        header {
+            padding: 1.1rem 1.5rem;
+            border-bottom: 1px solid var(--border);
+            background: #131624;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: .9rem;
+            flex-wrap: wrap;
+        }
+        header h1 { margin: 0; font-size: 1.18rem; }
+        .subhead { color: var(--muted); font-size: .84rem; }
+        header .links {
+            display: flex;
+            align-items: center;
+            gap: .5rem;
+            flex-wrap: wrap;
+        }
+        header .links a {
+            color: #cbd5e1;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: .36rem .62rem;
+            text-decoration: none;
+            font-size: .82rem;
+        }
+        .page {
+            max-width: 1300px;
+            margin: 1.4rem auto;
+            padding: 0 1.2rem 1.5rem;
+            display: grid;
+            grid-template-columns: minmax(420px, 520px) minmax(420px, 1fr);
+            gap: 1.2rem;
+        }
+        @media (max-width: 1060px) {
+            .page { grid-template-columns: 1fr; }
+        }
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 1.1rem;
+        }
+        .section-title {
+            margin: 0 0 .35rem;
+            font-size: 1rem;
+        }
+        .muted {
+            margin: 0 0 .9rem;
+            color: var(--muted);
+            font-size: .85rem;
+        }
+        .flash {
+            border-radius: 10px;
+            padding: .62rem .75rem;
+            margin-bottom: .55rem;
+            font-size: .86rem;
+            border: 1px solid transparent;
+        }
+        .flash.success {
+            background: rgba(34, 197, 94, 0.14);
+            border-color: rgba(34, 197, 94, 0.45);
+            color: #86efac;
+        }
+        .flash.error {
+            background: rgba(239, 68, 68, 0.14);
+            border-color: rgba(239, 68, 68, 0.45);
+            color: #fecaca;
+        }
+        .form-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: .8rem;
+        }
+        @media (max-width: 620px) {
+            .form-grid { grid-template-columns: 1fr; }
+        }
+        .field {
+            margin-bottom: .65rem;
+        }
+        .field.full {
+            grid-column: 1 / -1;
+        }
+        label {
+            display: block;
+            margin-bottom: .35rem;
+            font-size: .83rem;
+            color: #cbd5e1;
+            font-weight: 600;
+        }
+        input, select {
+            width: 100%;
+            background: #0f172a;
+            color: var(--text);
+            border: 1px solid #334155;
+            border-radius: 10px;
+            padding: .62rem .7rem;
+            font-size: .9rem;
+        }
+        .readonly {
+            background: #111827;
+            color: #bfdbfe;
+        }
+        .button-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: .5rem;
+            margin-top: .45rem;
+        }
+        button {
+            border: 0;
+            border-radius: 9px;
+            padding: .58rem .85rem;
+            font-weight: 600;
+            cursor: pointer;
+            font-size: .84rem;
+            color: #fff;
+            background: var(--primary);
+        }
+        .btn-secondary { background: var(--secondary); }
+        .btn-muted { background: #334155; }
+        .btn-danger { background: #dc2626; }
+        .scan-widget {
+            border: 1px solid #263048;
+            border-radius: 12px;
+            padding: .85rem;
+            margin-bottom: .8rem;
+            background: #111624;
+        }
+        .scan-widget h3 {
+            margin: 0 0 .3rem;
+            font-size: .92rem;
+        }
+        .scan-widget p {
+            margin: 0 0 .7rem;
+            color: var(--muted);
+            font-size: .82rem;
+        }
+        .camera-preview {
+            width: 100%;
+            min-height: 210px;
+            max-height: 320px;
+            border-radius: 12px;
+            border: 1px solid #2d3348;
+            background: #020617;
+            object-fit: contain;
+            margin: .55rem 0 .4rem;
+        }
+        .status-text {
+            min-height: 1rem;
+            font-size: .8rem;
+            color: #93c5fd;
+            margin-top: .2rem;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            border-bottom: 1px solid #22283e;
+            text-align: left;
+            padding: .58rem .45rem;
+            font-size: .83rem;
+            vertical-align: top;
+        }
+        th {
+            color: var(--muted);
+            font-size: .75rem;
+            text-transform: uppercase;
+            letter-spacing: .03em;
+        }
+        .modal {
+            position: fixed;
+            inset: 0;
+            background: rgba(2, 6, 23, .74);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            padding: 1rem;
+        }
+        .modal.hidden { display: none; }
+        .modal-card {
+            width: min(460px, 100%);
+            background: #111827;
+            border: 1px solid #374151;
+            border-radius: 12px;
+            padding: 1rem;
+        }
+        .modal-card h3 { margin: 0 0 .4rem; }
+        .modal-card p { margin: 0 0 .7rem; color: var(--muted); font-size: .84rem; }
+    </style>
+</head>
+<body>
+<header>
+    <div>
+        <h1>User Management</h1>
+        <div class="subhead">Logged in as {{ creator_role }}</div>
+    </div>
+    <div class="links">
+        <a href="/">Dashboard</a>
+        <a href="/logout">Logout</a>
+    </div>
+</header>
+
+<main class="page">
+    <section class="card">
+        <h2 class="section-title">Create Account</h2>
+        <p class="muted">Guard account: username/email + password only. User account: name + username/email + plate + RFID.</p>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="flash {{ category }}">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <form id="create-user-form" method="post" action="/users/create">
+            <div class="form-grid">
+                <div class="field" id="name-field">
+                    <label for="name">Name</label>
+                    <input id="name" name="name">
+                </div>
+
+                <div class="field">
+                    <label for="username">Username / Email</label>
+                    <input id="username" name="username" type="text" required>
+                </div>
+
+                <div class="field">
+                    <label for="password">Password</label>
+                    <input id="password" name="password" type="password" required>
+                </div>
+
+                <div class="field">
+                    <label for="role">Role</label>
+                    <select id="role" name="role" required>
+                        <option value="user">user</option>
+                        {% if can_create_guard %}
+                            <option value="guard">guard</option>
+                        {% endif %}
+                    </select>
+                </div>
+
+                <div class="field full" id="user-plate-section">
+                    <div class="scan-widget">
+                        <h3>License Plate Scanner</h3>
+                        <p>Select a physical camera device, scan plate, retry if needed, then optionally override manually.</p>
+
+                        <div class="form-grid">
+                            <div class="field">
+                                <label for="scan-device">Physical Camera Device</label>
+                                <select id="scan-device">
+                                    <option value="">scan devices first</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="button-row">
+                            <button type="button" class="btn-secondary" id="btn-load-devices">Scan Devices</button>
+                            <button type="button" id="btn-view-camera">View Camera</button>
+                            <button type="button" id="btn-scan-plate">Scan Plate</button>
+                            <button type="button" class="btn-secondary" id="btn-retry-scan">Retry Scan</button>
+                        </div>
+
+                        <img id="scan-preview" class="camera-preview" alt="Selected camera preview" style="display:none;">
+
+                        <div class="status-text" id="plate-scan-status"></div>
+
+                        <div class="form-grid" style="margin-top:.65rem;">
+                            <div class="field">
+                                <label for="scanned-plate-display">Scanned Plate</label>
+                                <input id="scanned-plate-display" class="readonly" readonly placeholder="No scan yet">
+                            </div>
+                            <div class="field">
+                                <label for="manual-plate">Manual Plate (optional override)</label>
+                                <input id="manual-plate" name="manual_plate" placeholder="Enter if scan is wrong">
+                            </div>
+                        </div>
+
+                        <input type="hidden" id="scanned-plate-hidden" name="scanned_plate">
+                        <input type="hidden" id="plate-scan-source" name="plate_scan_source">
+
+                        <p class="muted" style="margin-top:.25rem; margin-bottom:0;">
+                            If manual plate differs from scanned output, the correction is learned automatically when you save.
+                        </p>
+                    </div>
+                </div>
+
+                <div class="field full" id="user-rfid-section">
+                    <div class="scan-widget">
+                        <h3>RFID Scan Widget</h3>
+                        <p>Prompt for RFID scan/input and save the UID to the account.</p>
+
+                        <div class="form-grid">
+                            <div class="field">
+                                <label for="rfid-uid">RFID UID</label>
+                                <input id="rfid-uid" name="rfid_uid" placeholder="No RFID scanned yet">
+                            </div>
+                            <div class="field">
+                                <label>&nbsp;</label>
+                                <div class="button-row" style="margin-top:0;">
+                                    <button type="button" id="btn-open-rfid">Scan RFID</button>
+                                    <button type="button" class="btn-muted" id="btn-clear-rfid">Clear</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="field full">
+                    <div class="button-row">
+                        <button type="submit">Create Account</button>
+                    </div>
+                </div>
+            </div>
+        </form>
+    </section>
+
+    <section class="card">
+        <h2 class="section-title">Accounts</h2>
+        <p class="muted">License plate and RFID outputs are shown for each account.</p>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Username/Email</th>
+                    <th>Role</th>
+                    <th>Plate</th>
+                    <th>RFID UID</th>
+                    <th>Status</th>
+                    <th>Created</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% if users %}
+                    {% for u in users %}
+                        <tr>
+                            <td>{{ u.id }}</td>
+                            <td>{{ u.name }}</td>
+                            <td>{{ u.email }}</td>
+                            <td>{{ u.role }}</td>
+                            <td>{{ u.plate_numbers or '-' }}</td>
+                            <td>{{ u.rfid_uid or '-' }}</td>
+                            <td>{{ 'Active' if u.is_active else 'Inactive' }}</td>
+                            <td>{{ u.created_at or '-' }}</td>
+                        </tr>
+                    {% endfor %}
+                {% else %}
+                    <tr><td colspan="8">No users found.</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </section>
+</main>
+
+<div class="modal hidden" id="rfid-modal">
+    <div class="modal-card">
+        <h3>Scan RFID UID</h3>
+        <p>Scan the RFID tag now, or type it manually, then press Save.</p>
+        <input id="rfid-modal-input" placeholder="Scan/input RFID UID">
+        <div class="button-row" style="margin-top:.7rem;">
+            <button type="button" id="btn-save-rfid">Save RFID</button>
+            <button type="button" class="btn-muted" id="btn-cancel-rfid">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<script>
+(() => {
+    const nameField = document.getElementById('name-field');
+    const nameInput = document.getElementById('name');
+    const scanDeviceSel = document.getElementById('scan-device');
+    const scanPreview = document.getElementById('scan-preview');
+    const plateScanStatus = document.getElementById('plate-scan-status');
+    const scannedPlateDisplay = document.getElementById('scanned-plate-display');
+    const scannedPlateHidden = document.getElementById('scanned-plate-hidden');
+    const plateScanSource = document.getElementById('plate-scan-source');
+    const manualPlate = document.getElementById('manual-plate');
+    const roleSel = document.getElementById('role');
+    const userPlateSection = document.getElementById('user-plate-section');
+    const userRfidSection = document.getElementById('user-rfid-section');
+    const rfidUid = document.getElementById('rfid-uid');
+    const form = document.getElementById('create-user-form');
+
+    const rfidModal = document.getElementById('rfid-modal');
+    const rfidModalInput = document.getElementById('rfid-modal-input');
+
+    function normalizePlate(v) {
+        return (v || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    }
+
+    function normalizeRfid(v) {
+        return (v || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    }
+
+    function toggleRoleFields() {
+        const isUserRole = roleSel.value === 'user';
+        nameField.style.display = isUserRole ? '' : 'none';
+        userPlateSection.style.display = isUserRole ? '' : 'none';
+        userRfidSection.style.display = isUserRole ? '' : 'none';
+        nameInput.required = isUserRole;
+
+        if (!isUserRole) {
+            nameInput.value = '';
+            manualPlate.value = '';
+            scannedPlateDisplay.value = '';
+            scannedPlateHidden.value = '';
+            plateScanSource.value = '';
+            rfidUid.value = '';
+            plateScanStatus.textContent = 'Guard mode: plate and RFID are disabled.';
+        }
+    }
+
+    async function loadDevices() {
+        plateScanStatus.textContent = 'Loading camera devices...';
+        try {
+            const res = await fetch('/api/devices');
+            const data = await res.json();
+            const devices = data.devices || [];
+            const assignments = data.assignments || {};
+
+            scanDeviceSel.innerHTML = '';
+            const none = document.createElement('option');
+            none.value = '';
+            none.textContent = devices.length ? 'Select device' : 'No devices found';
+            scanDeviceSel.appendChild(none);
+
+            devices.forEach((d) => {
+                const opt = document.createElement('option');
+                opt.value = String(d.index);
+                opt.textContent = d.name + ' (/dev/video' + d.index + ')';
+                scanDeviceSel.appendChild(opt);
+            });
+
+            const preferred = assignments.entrance ?? assignments.exit;
+            if (Number.isInteger(preferred)) {
+                scanDeviceSel.value = String(preferred);
+            }
+
+            plateScanStatus.textContent = devices.length
+                ? 'Devices loaded. Select device and click Scan Plate.'
+                : 'No usable camera devices detected.';
+        } catch (_e) {
+            plateScanStatus.textContent = 'Failed to load devices.';
+        }
+    }
+
+    async function scanPlate() {
+        const deviceIndex = Number.parseInt(scanDeviceSel.value, 10);
+        if (Number.isNaN(deviceIndex)) {
+            plateScanStatus.textContent = 'Select a camera device first.';
+            return;
+        }
+
+        plateScanStatus.textContent = 'Scanning plate...';
+        try {
+            const res = await fetch('/api/scan_plate_once', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({device_index: deviceIndex}),
+            });
+            const data = await res.json();
+            if (!res.ok || !data.ok) {
+                plateScanStatus.textContent = data.error || 'Scan failed. Retry or enter manually.';
+                return;
+            }
+
+            const finalPlate = normalizePlate(data.final_plate || '');
+            const rawPlate = normalizePlate(data.raw_plate || finalPlate);
+
+            scannedPlateDisplay.value = finalPlate || 'UNKNOWN';
+            scannedPlateHidden.value = finalPlate;
+            plateScanSource.value = rawPlate;
+
+            const confPct = ((Number(data.confidence) || 0) * 100).toFixed(1);
+            plateScanStatus.textContent = 'Scan complete: ' + (finalPlate || 'UNKNOWN') + ' (' + confPct + '%). Retry if needed.';
+        } catch (_e) {
+            plateScanStatus.textContent = 'Scan request failed. Retry or enter manually.';
+        }
+    }
+
+    function viewSelectedCamera() {
+        const deviceIndex = Number.parseInt(scanDeviceSel.value, 10);
+        if (Number.isNaN(deviceIndex)) {
+            plateScanStatus.textContent = 'Select a camera device first.';
+            scanPreview.style.display = 'none';
+            scanPreview.removeAttribute('src');
+            return;
+        }
+
+        scanPreview.style.display = 'block';
+        scanPreview.src = '/video/account_creation?device_index=' + deviceIndex + '&t=' + Date.now();
+        plateScanStatus.textContent = 'Live camera preview active for selected device.';
+    }
+
+    function openRfidModal() {
+        rfidModalInput.value = rfidUid.value || '';
+        rfidModal.classList.remove('hidden');
+        rfidModalInput.focus();
+    }
+
+    function closeRfidModal() {
+        rfidModal.classList.add('hidden');
+    }
+
+    function saveRfidFromModal() {
+        rfidUid.value = normalizeRfid(rfidModalInput.value);
+        closeRfidModal();
+    }
+
+    document.getElementById('btn-load-devices').addEventListener('click', loadDevices);
+    document.getElementById('btn-view-camera').addEventListener('click', viewSelectedCamera);
+    document.getElementById('btn-scan-plate').addEventListener('click', scanPlate);
+    document.getElementById('btn-retry-scan').addEventListener('click', scanPlate);
+    scanDeviceSel.addEventListener('change', () => {
+        scanPreview.style.display = 'none';
+        scanPreview.removeAttribute('src');
+    });
+    roleSel.addEventListener('change', toggleRoleFields);
+
+    document.getElementById('btn-open-rfid').addEventListener('click', openRfidModal);
+    document.getElementById('btn-clear-rfid').addEventListener('click', () => { rfidUid.value = ''; });
+    document.getElementById('btn-save-rfid').addEventListener('click', saveRfidFromModal);
+    document.getElementById('btn-cancel-rfid').addEventListener('click', closeRfidModal);
+    rfidModalInput.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') {
+            ev.preventDefault();
+            saveRfidFromModal();
+        }
+    });
+
+    manualPlate.addEventListener('input', () => {
+        manualPlate.value = normalizePlate(manualPlate.value);
+    });
+    rfidUid.addEventListener('input', () => {
+        rfidUid.value = normalizeRfid(rfidUid.value);
+    });
+
+    form.addEventListener('submit', (ev) => {
+        const role = roleSel.value;
+        const finalPlate = normalizePlate(manualPlate.value) || normalizePlate(scannedPlateHidden.value);
+        const finalRfid = normalizeRfid(rfidUid.value);
+
+        if (role === 'user' && !nameInput.value.trim()) {
+            ev.preventDefault();
+            alert('User account requires a name.');
+            return;
+        }
+        if (role === 'user' && !finalPlate) {
+            ev.preventDefault();
+            alert('User account requires a plate scan or manual plate input.');
+            return;
+        }
+        if (role === 'user' && !finalRfid) {
+            ev.preventDefault();
+            alert('User account requires RFID scan/input.');
+            return;
+        }
+
+        if (role !== 'user') {
+            scannedPlateHidden.value = '';
+            plateScanSource.value = '';
+            manualPlate.value = '';
+            rfidUid.value = '';
+            return;
+        }
+
+        scannedPlateHidden.value = normalizePlate(scannedPlateHidden.value);
+        plateScanSource.value = normalizePlate(plateScanSource.value);
+        manualPlate.value = normalizePlate(manualPlate.value);
+        rfidUid.value = finalRfid;
+    });
+
+    toggleRoleFields();
+    loadDevices();
+})();
+</script>
+</body>
+</html>

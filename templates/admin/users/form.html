@@ -1,0 +1,135 @@
+{% extends 'base.html' %}
+{% block title %}{% if mode == 'create' %}Create User{% else %}Edit User{% endif %}{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2 style="margin-top:0;">{% if mode == 'create' %}Create User{% else %}Edit User{% endif %}</h2>
+    <p class="muted">Fields marked required must be completed.</p>
+
+    <form method="post" action="{% if mode == 'create' %}{{ url_for('admin.users_create') }}{% else %}{{ url_for('admin.users_update', user_id=user.id) }}{% endif %}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+        <div class="grid-2">
+            <div>
+                <label for="name">Name *</label>
+                <input id="name" name="name" value="{{ form_data.name }}" required>
+            </div>
+            <div>
+                <label for="email">Email *</label>
+                <input id="email" name="email" type="email" value="{{ form_data.email }}" required>
+            </div>
+
+            <div>
+                <label for="password">Password {% if mode == 'create' %}*{% endif %}</label>
+                <input id="password" name="password" type="password" {% if mode == 'create' %}required{% endif %}>
+                {% if mode == 'edit' %}
+                    <p class="muted" style="margin:0.3rem 0 0 0;">Leave blank to keep current password.</p>
+                {% endif %}
+            </div>
+
+            <div>
+                <label for="role">Role *</label>
+                <select id="role" name="role" required>
+                    {% for role in roles %}
+                        <option value="{{ role }}" {% if form_data.role == role %}selected{% endif %}>{{ role }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div>
+                <label for="rfid_uid">RFID UID</label>
+                <input id="rfid_uid" name="rfid_uid" value="{{ form_data.rfid_uid }}">
+            </div>
+
+            <div>
+                <label>Status</label>
+                <label style="font-weight:normal; display:flex; align-items:center; gap:0.45rem;">
+                    <input type="checkbox" name="is_active" {% if form_data.is_active %}checked{% endif %} style="width:auto;">
+                    Active user
+                </label>
+            </div>
+        </div>
+
+        <hr style="margin:1rem 0; border:0; border-top:1px solid #e5e7eb;">
+
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <h3 style="margin:0;">Associated Vehicles</h3>
+            <button class="btn btn-muted" type="button" id="add-plate-row">Add Plate</button>
+        </div>
+
+        <p class="muted" style="margin-top:0.4rem;">Format: AB1234, ABC1234, AB 1234, or ABC 1234</p>
+
+        <div id="plate-rows">
+            {% for plate in vehicles %}
+                <div class="plate-row" style="display:flex; gap:0.55rem; margin-bottom:0.55rem;">
+                    <input
+                        name="plate_numbers"
+                        value="{{ plate }}"
+                        placeholder="Plate number"
+                        pattern="^[A-Z]{2,3}\s?\d{3,4}$"
+                        title="Use PH LTO format: AB1234 or ABC 1234"
+                        required
+                    >
+                    <button class="btn btn-danger remove-plate" type="button">Remove</button>
+                </div>
+            {% endfor %}
+        </div>
+
+        <div style="margin-top: 1rem; display:flex; gap:0.55rem;">
+            <button class="btn btn-primary" type="submit">{% if mode == 'create' %}Create{% else %}Save Changes{% endif %}</button>
+            <a class="btn btn-muted" href="{{ url_for('admin.users_index') }}">Cancel</a>
+        </div>
+    </form>
+</div>
+
+<script>
+(function () {
+    const rowsContainer = document.getElementById('plate-rows');
+    const addBtn = document.getElementById('add-plate-row');
+
+    function createPlateRow(value) {
+        const row = document.createElement('div');
+        row.className = 'plate-row';
+        row.style.display = 'flex';
+        row.style.gap = '0.55rem';
+        row.style.marginBottom = '0.55rem';
+
+        row.innerHTML =
+            '<input name="plate_numbers" placeholder="Plate number" ' +
+            'pattern="^[A-Z]{2,3}\\s?\\d{3,4}$" ' +
+            'title="Use PH LTO format: AB1234 or ABC 1234" required>' +
+            '<button class="btn btn-danger remove-plate" type="button">Remove</button>';
+
+        const input = row.querySelector('input');
+        input.value = value || '';
+        return row;
+    }
+
+    function wireRemoveButtons() {
+        rowsContainer.querySelectorAll('.remove-plate').forEach((btn) => {
+            btn.onclick = function () {
+                const allRows = rowsContainer.querySelectorAll('.plate-row');
+                if (allRows.length <= 1) {
+                    alert('At least one vehicle plate is required.');
+                    return;
+                }
+                btn.closest('.plate-row').remove();
+            };
+        });
+    }
+
+    addBtn.addEventListener('click', function () {
+        rowsContainer.appendChild(createPlateRow(''));
+        wireRemoveButtons();
+    });
+
+    rowsContainer.addEventListener('input', function (ev) {
+        if (ev.target && ev.target.name === 'plate_numbers') {
+            ev.target.value = ev.target.value.toUpperCase();
+        }
+    });
+
+    wireRemoveButtons();
+})();
+</script>
+{% endblock %}

@@ -21,8 +21,14 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
-from ocr_processor import recognise_plate_batch, correct_ph_plate, match_plate
-from database import insert_detection, get_registered_plates, enqueue_manual_input
+from ocr_processor import recognise_plate, recognise_plate_batch, correct_ph_plate, match_plate
+from database import (
+    insert_detection,
+    get_registered_plates,
+    get_registered_plate_record,
+    suggest_plate_from_feedback,
+    enqueue_manual_input,
+)
 from tracker import Tracker
 
 try:
@@ -512,6 +518,11 @@ class CameraProcessor:
         ocr_raw, confidence = recognise_plate_batch(plate_crops)
         ocr_corrected, plate_valid, _ = correct_ph_plate(ocr_raw)
 
+        feedback_plate, feedback_score, feedback_uses = suggest_plate_from_feedback(ocr_raw)
+        if feedback_plate:
+            ocr_corrected = feedback_plate
+            plate_valid = True
+
         registered = get_registered_plates()
         matched_plate, match_score, match_status = match_plate(ocr_corrected, registered)
 
@@ -560,6 +571,12 @@ class CameraProcessor:
             )
             return
 
+        registration = get_registered_plate_record(final_plate)
+        expected_rfid_uid = None
+        if registration:
+            expected_rfid_uid = registration.get("rfid_uid")
+        rfid_status = "NOT_SCANNED" if expected_rfid_uid else "NOT_REQUIRED"
+
         insert_detection(
             plate_number=final_plate,
             camera=self.camera_name,
@@ -572,11 +589,15 @@ class CameraProcessor:
             matched_plate=matched_plate,
             match_score=match_score,
             match_status=match_status,
+            rfid_status=rfid_status,
+            expected_rfid_uid=expected_rfid_uid,
         )
         print(
             f"[{self.camera_name}] Detected: {final_plate} "
             f"(raw={ocr_raw}, conf={confidence:.2f}, match={match_status}, "
-            f"score={match_score:.2f}, {len(plate_crops)} plate crops) -> {filename}"
+            f"score={match_score:.2f}, feedback={feedback_score:.1f}/{feedback_uses}, "
+            f"rfid={rfid_status}, "
+            f"{len(plate_crops)} plate crops) -> {filename}"
         )
 
 
@@ -855,3 +876,208 @@ def stop_camera(camera_name: str):
             print(f"[system] {camera_name} camera stopped.")
             return True
     return False
+
+
+def scan_plate_once(camera_name: str) -> dict:
+    """
+    Perform a single OCR plate scan from the latest frame for a camera.
+    Returns a result dict with raw/corrected/final plate and confidence.
+    """
+    camera = str(camera_name or "").lower()
+    if camera not in {"entrance", "exit"}:
+        raise ValueError("Invalid camera name.")
+
+    with frame_locks[camera]:
+        frame = latest_frames[camera].copy() if latest_frames[camera] is not None else None
+
+    if frame is None:
+        raise RuntimeError("No frame available. Start and warm up the selected camera first.")
+
+    plate_model = _get_plate_model()
+    result = plate_model(frame, conf=YOLO_CONF, verbose=False)[0]
+
+    best_box = None
+    best_conf = 0.0
+    for box in result.boxes:
+        x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
+        area = (x2 - x1) * (y2 - y1)
+        conf = float(box.conf[0])
+        if area < MIN_PLATE_AREA:
+            continue
+        if conf > best_conf:
+            best_conf = conf
+            best_box = (x1, y1, x2, y2)
+
+    if best_box is None:
+        raise ValueError("No license plate detected. Retry scan or reposition the vehicle.")
+
+    x1, y1, x2, y2 = best_box
+    h, w = frame.shape[:2]
+    x1, y1 = max(0, x1), max(0, y1)
+    x2, y2 = min(w, x2), min(h, y2)
+    crop = frame[y1:y2, x1:x2]
+    if crop.size == 0:
+        raise ValueError("Detected plate crop is empty. Retry scan.")
+
+    ocr_raw, ocr_conf = recognise_plate(crop)
+    ocr_corrected, plate_valid, fmt = correct_ph_plate(ocr_raw)
+
+    feedback_plate, feedback_score, feedback_uses = suggest_plate_from_feedback(ocr_raw)
+    if feedback_plate:
+        final_plate = feedback_plate
+        plate_valid = True
+    elif ocr_corrected and ocr_corrected != "UNKNOWN":
+        final_plate = ocr_corrected
+    else:
+        final_plate = ocr_raw if ocr_raw else "UNKNOWN"
+
+    return {
+        "camera": camera,
+        "raw_plate": ocr_raw,
+        "corrected_plate": ocr_corrected,
+        "final_plate": final_plate,
+        "confidence": float(ocr_conf),
+        "plate_valid": bool(plate_valid),
+        "format": fmt,
+        "feedback_score": float(feedback_score),
+        "feedback_uses": int(feedback_uses),
+        "bbox": [x1, y1, x2, y2],
+    }
+
+
+def _scan_plate_from_frame(frame: np.ndarray) -> dict:
+    """Run one-shot plate detection and OCR on a raw frame."""
+    if frame is None or frame.size == 0:
+        raise RuntimeError("Unable to read a valid frame from camera.")
+
+    plate_model = _get_plate_model()
+    result = plate_model(frame, conf=YOLO_CONF, verbose=False)[0]
+
+    best_box = None
+    best_conf = 0.0
+    for box in result.boxes:
+        x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
+        area = (x2 - x1) * (y2 - y1)
+        conf = float(box.conf[0])
+        if area < MIN_PLATE_AREA:
+            continue
+        if conf > best_conf:
+            best_conf = conf
+            best_box = (x1, y1, x2, y2)
+
+    if best_box is None:
+        raise ValueError("No license plate detected. Retry scan or reposition the vehicle.")
+
+    x1, y1, x2, y2 = best_box
+    h, w = frame.shape[:2]
+    x1, y1 = max(0, x1), max(0, y1)
+    x2, y2 = min(w, x2), min(h, y2)
+    crop = frame[y1:y2, x1:x2]
+    if crop.size == 0:
+        raise ValueError("Detected plate crop is empty. Retry scan.")
+
+    ocr_raw, ocr_conf = recognise_plate(crop)
+    ocr_corrected, plate_valid, fmt = correct_ph_plate(ocr_raw)
+
+    feedback_plate, feedback_score, feedback_uses = suggest_plate_from_feedback(ocr_raw)
+    if feedback_plate:
+        final_plate = feedback_plate
+        plate_valid = True
+    elif ocr_corrected and ocr_corrected != "UNKNOWN":
+        final_plate = ocr_corrected
+    else:
+        final_plate = ocr_raw if ocr_raw else "UNKNOWN"
+
+    return {
+        "raw_plate": ocr_raw,
+        "corrected_plate": ocr_corrected,
+        "final_plate": final_plate,
+        "confidence": float(ocr_conf),
+        "plate_valid": bool(plate_valid),
+        "format": fmt,
+        "feedback_score": float(feedback_score),
+        "feedback_uses": int(feedback_uses),
+        "bbox": [x1, y1, x2, y2],
+    }
+
+
+def scan_plate_once_from_device(device_index: int) -> dict:
+    """
+    One-shot plate scan using a physical camera index.
+    This path never inserts detections/logs into the main entrance/exit pipeline.
+    """
+    if not isinstance(device_index, int) or device_index < 0:
+        raise ValueError("Invalid device index.")
+
+    cap, backend_name = _open_video_capture(device_index)
+    if cap is None:
+        raise RuntimeError(f"Cannot open {_device_label(device_index)}")
+
+    try:
+        if backend_name == "CAP_V4L2":
+            fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+            cap.set(cv2.CAP_PROP_FOURCC, fourcc)
+
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+        frame = None
+        for _ in range(8):  # warm-up reads
+            ret, candidate = cap.read()
+            if ret and candidate is not None and candidate.size > 0:
+                frame = candidate
+            time.sleep(0.03)
+
+        result = _scan_plate_from_frame(frame)
+        result.update({
+            "device_index": int(device_index),
+            "backend": backend_name,
+        })
+        return result
+    finally:
+        cap.release()
+
+
+def start_device_mjpeg_stream(device_index: int):
+    """
+    Start an MJPEG stream directly from a physical camera index.
+    This stream is for account-creation preview only and does not write logs.
+    """
+    if not isinstance(device_index, int) or device_index < 0:
+        raise ValueError("Invalid device index.")
+
+    cap, backend_name = _open_video_capture(device_index)
+    if cap is None:
+        raise RuntimeError(f"Cannot open {_device_label(device_index)}")
+
+    if backend_name == "CAP_V4L2":
+        fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+        cap.set(cv2.CAP_PROP_FOURCC, fourcc)
+
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+    def _generator():
+        try:
+            while True:
+                ret, frame = cap.read()
+                if not ret or frame is None or frame.size == 0:
+                    time.sleep(0.05)
+                    continue
+
+                ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                if not ok:
+                    time.sleep(0.03)
+                    continue
+
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n\r\n"
+                    + jpeg.tobytes()
+                    + b"\r\n"
+                )
+                time.sleep(0.066)
+        finally:
+            cap.release()
+
+    return _generator()

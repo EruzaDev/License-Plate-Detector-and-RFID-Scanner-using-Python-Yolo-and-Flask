@@ -6,5 +6,9 @@ lapx>=0.5.2
 easyocr
 opencv-python
 flask
+flask-sqlalchemy
+flask-login
+flask-bcrypt
+flask-wtf
 numpy
 rapidfuzz

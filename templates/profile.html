@@ -1,0 +1,45 @@
+{% extends 'base.html' %}
+{% block title %}My Profile{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2 style="margin-top: 0;">My Profile</h2>
+    <div class="grid-2">
+        <div>
+            <label>Name</label>
+            <input value="{{ current_user.name }}" readonly>
+        </div>
+        <div>
+            <label>Email</label>
+            <input value="{{ current_user.email }}" readonly>
+        </div>
+        <div>
+            <label>Role</label>
+            <input value="{{ current_user.role }}" readonly>
+        </div>
+        <div>
+            <label>RFID UID</label>
+            <input value="{{ current_user.rfid_uid or '' }}" readonly>
+        </div>
+        <div>
+            <label>Status</label>
+            <input value="{{ 'Active' if current_user.is_active else 'Inactive' }}" readonly>
+        </div>
+        <div>
+            <label>Created</label>
+            <input value="{{ current_user.created_at or '' }}" readonly>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <h3 style="margin-top: 0;">Registered Vehicles</h3>
+    {% if current_user.vehicles %}
+        {% for vehicle in current_user.vehicles %}
+            <span class="tag">{{ vehicle.plate_number }}</span>
+        {% endfor %}
+    {% else %}
+        <p class="muted">No vehicle records.</p>
+    {% endif %}
+</div>
+{% endblock %}

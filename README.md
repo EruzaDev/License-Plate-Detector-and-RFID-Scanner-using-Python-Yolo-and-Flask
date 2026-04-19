@@ -8,10 +8,12 @@ Raspberry Pi 5.
 
 - **Dual USB webcams** — entrance (`/dev/video0`) and exit (`/dev/video1`)
 - **Motion detection** (MOG2) → **YOLOv8 plate detection** → **EasyOCR plate reading**
+- **RFID verification layer** with pending scan prompts and match/mismatch status
 - YOLO bounding boxes drawn on the live MJPEG stream
 - 10-second cooldown prevents duplicate captures of the same plate
 - Unknown OCR results are queued for required manual plate input (not logged as UNKNOWN)
 - Pending manual captures can be explicitly discarded from the dashboard prompt
+- Wrong detections can be corrected from the dashboard; corrections are learned and reused by OCR
 - SQLite database logs every detection
 - Dark-themed Flask dashboard with live feeds, stats, and date filtering
 
@@ -79,6 +81,43 @@ python app.py
 ```
 
 The dashboard will be available at **http://<Pi-IP>:5000**.
+
+## Users Module (App Factory)
+
+A separate users/auth module is now included using:
+
+- Flask app-factory pattern
+- Flask-SQLAlchemy models (`users`, `vehicles`)
+- Flask-Login authentication
+- Flask-Bcrypt password hashing
+- Flask-WTF CSRF protection
+- Admin CRUD for users and associated vehicle plates
+
+Run the users module:
+
+```bash
+python users_app.py
+```
+
+Open:
+
+- `http://<Pi-IP>:5001/login`
+
+Default seeded superadmin (first run only, when no users exist):
+
+- Email: `admin@campus.local`
+- Password: `changeme123`
+
+Environment variables for production use:
+
+- `SECRET_KEY` (required outside development)
+- `DATABASE_URL` (optional, defaults to `sqlite:///lpr_system.db`)
+
+Example:
+
+```bash
+SECRET_KEY='replace-me' DATABASE_URL='sqlite:///lpr_system.db' python users_app.py
+```
 
 ## How It Works
 

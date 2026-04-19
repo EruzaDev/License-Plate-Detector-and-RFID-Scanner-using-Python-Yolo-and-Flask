@@ -1,0 +1,108 @@
+{% extends 'base.html' %}
+{% block title %}Users{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:0.8rem; flex-wrap:wrap;">
+        <div>
+            <h2 style="margin:0;">Users</h2>
+            <p class="muted" style="margin:0.3rem 0 0 0;">Search and manage accounts.</p>
+        </div>
+        {% if can_create %}
+            <a class="btn btn-primary" href="{{ url_for('admin.users_new') }}">New User</a>
+        {% endif %}
+    </div>
+
+    <form method="get" action="{{ url_for('admin.users_index') }}" style="margin-top: 0.9rem;">
+        <div class="grid-2">
+            <div>
+                <label for="q">Search</label>
+                <input id="q" name="q" value="{{ q }}" placeholder="Name, email, or role">
+            </div>
+            <div>
+                <label for="role">Role</label>
+                <select id="role" name="role">
+                    <option value="">All roles</option>
+                    {% for role in ['superadmin', 'guard', 'user'] %}
+                        <option value="{{ role }}" {% if role_filter == role %}selected{% endif %}>{{ role }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+        </div>
+        <div style="margin-top:0.8rem; display:flex; gap:0.55rem;">
+            <button class="btn btn-primary" type="submit">Apply</button>
+            <a class="btn btn-muted" href="{{ url_for('admin.users_index') }}">Clear</a>
+        </div>
+    </form>
+</div>
+
+<div class="card">
+    <p class="muted" style="margin-top:0;">{{ total }} record(s) found.</p>
+    <div style="overflow-x:auto;">
+        <table>
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Email</th>
+                    <th>Role</th>
+                    <th>RFID UID</th>
+                    <th>Status</th>
+                    <th>Vehicles</th>
+                    <th>Created</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% if users %}
+                    {% for user in users %}
+                        <tr>
+                            <td>{{ user.name }}</td>
+                            <td>{{ user.email }}</td>
+                            <td>{{ user.role }}</td>
+                            <td>{{ user.rfid_uid or '-' }}</td>
+                            <td>{{ 'Active' if user.is_active else 'Inactive' }}</td>
+                            <td>
+                                {% if user.vehicles %}
+                                    {% for vehicle in user.vehicles %}
+                                        <span class="tag">{{ vehicle.plate_number }}</span>
+                                    {% endfor %}
+                                {% else %}
+                                    <span class="muted">None</span>
+                                {% endif %}
+                            </td>
+                            <td>{{ user.created_at or '-' }}</td>
+                            <td>
+                                {% if can_manage %}
+                                    <a class="btn btn-primary" href="{{ url_for('admin.users_edit', user_id=user.id) }}">Edit</a>
+                                    <form method="post" action="{{ url_for('admin.users_delete', user_id=user.id) }}" style="display:inline;">
+                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                        <button class="btn btn-danger" type="submit" onclick="return confirm('Deactivate this user?')">Deactivate</button>
+                                    </form>
+                                {% else %}
+                                    <span class="muted">Read-only</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                    {% endfor %}
+                {% else %}
+                    <tr>
+                        <td colspan="8" class="muted">No users found.</td>
+                    </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="card" style="display:flex; justify-content:space-between; align-items:center;">
+    <div class="muted">Page {{ page }} of {{ pages }}</div>
+    <div style="display:flex; gap:0.5rem;">
+        {% if page > 1 %}
+            <a class="btn btn-muted" href="{{ url_for('admin.users_index', page=page-1, q=q, role=role_filter) }}">Previous</a>
+        {% endif %}
+        {% if page < pages %}
+            <a class="btn btn-primary" href="{{ url_for('admin.users_index', page=page+1, q=q, role=role_filter) }}">Next</a>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

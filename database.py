@@ -7,6 +7,7 @@ import sqlite3
 import os
 import threading
 import re
+from difflib import SequenceMatcher
 from datetime import datetime
 
 # Path to the database file (sits next to this script)
@@ -15,6 +16,7 @@ DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lpr_system.d
 # Thread-local storage so each thread gets its own connection
 _local = threading.local()
 _PLATE_SANITIZER = re.compile(r"[^A-Z0-9]")
+_RFID_SANITIZER = re.compile(r"[^A-Z0-9]")
 
 
 def _normalize_plate(plate: str | None) -> str:
@@ -22,6 +24,13 @@ def _normalize_plate(plate: str | None) -> str:
     if not plate:
         return ""
     return _PLATE_SANITIZER.sub("", str(plate).upper())
+
+
+def _normalize_rfid_uid(uid: str | None) -> str:
+    """Normalize RFID UID text to uppercase alphanumeric form."""
+    if not uid:
+        return ""
+    return _RFID_SANITIZER.sub("", str(uid).upper())
 
 
 def _get_connection():
@@ -60,7 +69,11 @@ def init_db():
             plate_valid  INTEGER DEFAULT 0,
             matched_plate TEXT,
             match_score  REAL,
-            match_status TEXT DEFAULT 'NO_MATCH'
+            match_status TEXT DEFAULT 'NO_MATCH',
+            rfid_status  TEXT DEFAULT 'NOT_REQUIRED',
+            expected_rfid_uid TEXT,
+            scanned_rfid_uid  TEXT,
+            rfid_verified_at  TEXT
         )
     """)
 
@@ -71,15 +84,21 @@ def init_db():
     _ensure_column(conn, "detections", "matched_plate TEXT")
     _ensure_column(conn, "detections", "match_score REAL")
     _ensure_column(conn, "detections", "match_status TEXT DEFAULT 'NO_MATCH'")
+    _ensure_column(conn, "detections", "rfid_status TEXT DEFAULT 'NOT_REQUIRED'")
+    _ensure_column(conn, "detections", "expected_rfid_uid TEXT")
+    _ensure_column(conn, "detections", "scanned_rfid_uid TEXT")
+    _ensure_column(conn, "detections", "rfid_verified_at TEXT")
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS registered_plates (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             plate_number TEXT NOT NULL UNIQUE,
             owner_name   TEXT,
+            rfid_uid     TEXT,
             created_at   TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    _ensure_column(conn, "registered_plates", "rfid_uid TEXT")
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS manual_inputs (
@@ -125,6 +144,23 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_detections_timestamp
         ON detections (timestamp DESC)
     """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ocr_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            wrong_input TEXT NOT NULL,
+            corrected_plate TEXT NOT NULL,
+            source TEXT DEFAULT 'manual',
+            usage_count INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(wrong_input, corrected_plate)
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_ocr_feedback_wrong
+        ON ocr_feedback (wrong_input)
+    """)
     conn.commit()
 
 
@@ -135,7 +171,11 @@ def insert_detection(plate_number: str, camera: str, timestamp: str,
                      plate_valid: bool | None = None,
                      matched_plate: str | None = None,
                      match_score: float | None = None,
-                     match_status: str | None = None) -> int:
+                     match_status: str | None = None,
+                     rfid_status: str | None = None,
+                     expected_rfid_uid: str | None = None,
+                     scanned_rfid_uid: str | None = None,
+                     rfid_verified_at: str | None = None) -> int:
     """
     Insert a new detection record.
     Returns the new row id.
@@ -147,6 +187,12 @@ def insert_detection(plate_number: str, camera: str, timestamp: str,
     normalized_matched_plate = _normalize_plate(matched_plate) or None
     plate_valid_value = None if plate_valid is None else int(bool(plate_valid))
     status_value = (match_status or "NO_MATCH").upper()
+    expected_uid_value = _normalize_rfid_uid(expected_rfid_uid) or None
+    scanned_uid_value = _normalize_rfid_uid(scanned_rfid_uid) or None
+    if rfid_status is None:
+        rfid_status_value = "NOT_SCANNED" if expected_uid_value else "NOT_REQUIRED"
+    else:
+        rfid_status_value = str(rfid_status).upper()
 
     cur = conn.execute(
         """INSERT INTO detections (
@@ -160,9 +206,13 @@ def insert_detection(plate_number: str, camera: str, timestamp: str,
                plate_valid,
                matched_plate,
                match_score,
-               match_status
+               match_status,
+               rfid_status,
+               expected_rfid_uid,
+               scanned_rfid_uid,
+               rfid_verified_at
            )
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             normalized_plate,
             camera,
@@ -175,13 +225,21 @@ def insert_detection(plate_number: str, camera: str, timestamp: str,
             normalized_matched_plate,
             match_score,
             status_value,
+            rfid_status_value,
+            expected_uid_value,
+            scanned_uid_value,
+            rfid_verified_at,
         ),
     )
     conn.commit()
     return cur.lastrowid
 
 
-def register_plate(plate_number: str, owner_name: str | None = None) -> bool:
+def register_plate(
+    plate_number: str,
+    owner_name: str | None = None,
+    rfid_uid: str | None = None,
+) -> bool:
     """
     Register or update a known plate for fuzzy matching.
     Returns False when the plate is empty after normalization.
@@ -189,16 +247,18 @@ def register_plate(plate_number: str, owner_name: str | None = None) -> bool:
     normalized = _normalize_plate(plate_number)
     if not normalized:
         return False
+    normalized_uid = _normalize_rfid_uid(rfid_uid) or None
 
     conn = _get_connection()
     conn.execute(
         """
-        INSERT INTO registered_plates (plate_number, owner_name)
-        VALUES (?, ?)
+        INSERT INTO registered_plates (plate_number, owner_name, rfid_uid)
+        VALUES (?, ?, ?)
         ON CONFLICT(plate_number) DO UPDATE SET
-            owner_name = COALESCE(excluded.owner_name, registered_plates.owner_name)
+            owner_name = COALESCE(excluded.owner_name, registered_plates.owner_name),
+            rfid_uid = COALESCE(excluded.rfid_uid, registered_plates.rfid_uid)
         """,
-        (normalized, owner_name),
+        (normalized, owner_name, normalized_uid),
     )
     conn.commit()
     return True
@@ -211,6 +271,110 @@ def get_registered_plates() -> list[str]:
         "SELECT plate_number FROM registered_plates ORDER BY plate_number"
     ).fetchall()
     return [str(r["plate_number"]) for r in rows]
+
+
+def get_registered_plate_record(plate_number: str) -> dict | None:
+    """Return plate registration details including owner and RFID UID."""
+    normalized = _normalize_plate(plate_number)
+    if not normalized:
+        return None
+
+    conn = _get_connection()
+    row = conn.execute(
+        """
+        SELECT plate_number, owner_name, rfid_uid
+        FROM registered_plates
+        WHERE plate_number = ?
+        """,
+        (normalized,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def get_registered_plate_records(limit: int = 200) -> list:
+    """Return registered plate records with optional RFID UIDs."""
+    conn = _get_connection()
+    rows = conn.execute(
+        """
+        SELECT plate_number, owner_name, rfid_uid, created_at
+        FROM registered_plates
+        ORDER BY plate_number ASC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_pending_rfid_verifications(limit: int = 20) -> list:
+    """Return detections that require RFID scan and are still pending."""
+    conn = _get_connection()
+    rows = conn.execute(
+        """
+        SELECT id, plate_number, camera, timestamp, image_path, confidence,
+               rfid_status, expected_rfid_uid, scanned_rfid_uid, rfid_verified_at
+        FROM detections
+        WHERE rfid_status = 'NOT_SCANNED'
+        ORDER BY id ASC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def verify_detection_rfid(detection_id: int, scanned_uid: str) -> dict | None:
+    """
+    Verify a pending detection against a scanned RFID UID.
+    Returns verification summary or None when detection does not exist.
+    Raises ValueError if UID is invalid or detection does not need RFID.
+    """
+    normalized_uid = _normalize_rfid_uid(scanned_uid)
+    if not normalized_uid:
+        raise ValueError("RFID UID is required.")
+
+    conn = _get_connection()
+    row = conn.execute(
+        """
+        SELECT id, plate_number, rfid_status, expected_rfid_uid
+        FROM detections
+        WHERE id = ?
+        """,
+        (detection_id,),
+    ).fetchone()
+    if row is None:
+        return None
+
+    expected_uid = _normalize_rfid_uid(row["expected_rfid_uid"])
+    if not expected_uid:
+        raise ValueError("This detection does not require RFID verification.")
+
+    current_status = str(row["rfid_status"] or "NOT_REQUIRED").upper()
+    if current_status not in ("NOT_SCANNED", "MISMATCH"):
+        raise ValueError("RFID verification is already finalized for this detection.")
+
+    new_status = "MATCH" if normalized_uid == expected_uid else "MISMATCH"
+    verified_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute(
+        """
+        UPDATE detections
+        SET rfid_status = ?,
+            scanned_rfid_uid = ?,
+            rfid_verified_at = ?
+        WHERE id = ?
+        """,
+        (new_status, normalized_uid, verified_at, detection_id),
+    )
+    conn.commit()
+
+    return {
+        "detection_id": int(row["id"]),
+        "plate_number": str(row["plate_number"]),
+        "rfid_status": new_status,
+        "expected_rfid_uid": expected_uid,
+        "scanned_rfid_uid": normalized_uid,
+        "decision": "ACCESS_GRANTED" if new_status == "MATCH" else "FLAGGED_MISMATCH",
+    }
 
 
 def enqueue_manual_input(
@@ -323,10 +487,158 @@ def resolve_manual_input(manual_input_id: int, plate_number: str) -> dict | None
     )
     conn.commit()
 
+    feedback_candidates = [row["ocr_corrected"], row["ocr_raw"]]
+    for wrong_value in feedback_candidates:
+        if record_ocr_feedback(wrong_value, normalized_plate, source="manual_queue"):
+            break
+
     return {
         "manual_input_id": manual_input_id,
         "plate_number": normalized_plate,
         "detection_id": detection_id,
+    }
+
+
+def record_ocr_feedback(
+    wrong_input: str | None,
+    corrected_plate: str | None,
+    source: str = "manual",
+) -> bool:
+    """
+    Record a wrong->correct OCR mapping for future auto-corrections.
+    Returns True when feedback is persisted.
+    """
+    wrong_norm = _normalize_plate(wrong_input)
+    corrected_norm = _normalize_plate(corrected_plate)
+    if not wrong_norm or wrong_norm == "UNKNOWN":
+        return False
+    if not corrected_norm or corrected_norm == "UNKNOWN":
+        return False
+    if wrong_norm == corrected_norm:
+        return False
+
+    conn = _get_connection()
+    conn.execute(
+        """
+        INSERT INTO ocr_feedback (wrong_input, corrected_plate, source, usage_count)
+        VALUES (?, ?, ?, 1)
+        ON CONFLICT(wrong_input, corrected_plate) DO UPDATE SET
+            usage_count = usage_count + 1,
+            updated_at = CURRENT_TIMESTAMP,
+            source = COALESCE(excluded.source, ocr_feedback.source)
+        """,
+        (wrong_norm, corrected_norm, source),
+    )
+    conn.commit()
+    return True
+
+
+def suggest_plate_from_feedback(input_text: str | None) -> tuple[str | None, float, int]:
+    """
+    Suggest a corrected plate from learned OCR feedback.
+
+    Returns
+    -------
+    tuple[str | None, float, int]
+        (corrected_plate, confidence_score_0_to_100, usage_count)
+    """
+    normalized = _normalize_plate(input_text)
+    if not normalized or normalized == "UNKNOWN":
+        return (None, 0.0, 0)
+
+    conn = _get_connection()
+
+    # Exact match is strongest and applies immediately.
+    exact = conn.execute(
+        """
+        SELECT corrected_plate, usage_count
+        FROM ocr_feedback
+        WHERE wrong_input = ?
+        ORDER BY usage_count DESC, updated_at DESC
+        LIMIT 1
+        """,
+        (normalized,),
+    ).fetchone()
+    if exact is not None:
+        return (str(exact["corrected_plate"]), 100.0, int(exact["usage_count"]))
+
+    # Fuzzy fallback for near-identical OCR mistakes.
+    rows = conn.execute(
+        """
+        SELECT wrong_input, corrected_plate, usage_count
+        FROM ocr_feedback
+        """
+    ).fetchall()
+    if not rows:
+        return (None, 0.0, 0)
+
+    best_plate = None
+    best_score = 0.0
+    best_uses = 0
+
+    for row in rows:
+        wrong = str(row["wrong_input"])
+        score = SequenceMatcher(None, normalized, wrong).ratio() * 100.0
+        uses = int(row["usage_count"])
+        if score > best_score or (abs(score - best_score) < 1e-6 and uses > best_uses):
+            best_score = score
+            best_uses = uses
+            best_plate = str(row["corrected_plate"])
+
+    # Conservative fuzzy rule to avoid over-correcting unseen strings.
+    if best_plate is not None and best_score >= 92.0 and best_uses >= 2:
+        return (best_plate, round(best_score, 2), best_uses)
+
+    return (None, 0.0, 0)
+
+
+def correct_detection_plate(detection_id: int, corrected_plate: str) -> dict | None:
+    """
+    Correct an existing detection plate and feed the correction back into OCR memory.
+    Returns correction summary or None when detection does not exist.
+    """
+    normalized_plate = _normalize_plate(corrected_plate)
+    if not normalized_plate or normalized_plate == "UNKNOWN":
+        raise ValueError("Corrected plate is invalid.")
+
+    conn = _get_connection()
+    row = conn.execute(
+        """
+        SELECT id, plate_number, ocr_raw, ocr_corrected
+        FROM detections
+        WHERE id = ?
+        """,
+        (detection_id,),
+    ).fetchone()
+
+    if row is None:
+        return None
+
+    previous_plate = _normalize_plate(row["plate_number"])
+
+    conn.execute(
+        """
+        UPDATE detections
+        SET plate_number = ?,
+            ocr_corrected = ?,
+            plate_valid = 1,
+            matched_plate = ?,
+            match_score = 100.0,
+            match_status = 'MANUAL_CORRECTION'
+        WHERE id = ?
+        """,
+        (normalized_plate, normalized_plate, normalized_plate, detection_id),
+    )
+    conn.commit()
+
+    for wrong_value in (previous_plate, row["ocr_corrected"], row["ocr_raw"]):
+        if record_ocr_feedback(wrong_value, normalized_plate, source="dashboard_correction"):
+            break
+
+    return {
+        "detection_id": int(row["id"]),
+        "old_plate_number": previous_plate,
+        "plate_number": normalized_plate,
     }
 
 
@@ -415,11 +727,23 @@ def get_stats() -> dict:
     exit_count = conn.execute(
         "SELECT COUNT(*) FROM detections WHERE camera = 'exit'"
     ).fetchone()[0]
+    rfid_pending = conn.execute(
+        "SELECT COUNT(*) FROM detections WHERE rfid_status = 'NOT_SCANNED'"
+    ).fetchone()[0]
+    rfid_match = conn.execute(
+        "SELECT COUNT(*) FROM detections WHERE rfid_status = 'MATCH'"
+    ).fetchone()[0]
+    rfid_mismatch = conn.execute(
+        "SELECT COUNT(*) FROM detections WHERE rfid_status = 'MISMATCH'"
+    ).fetchone()[0]
     return {
         "total": total,
         "today": today_count,
         "entrance": entrance_count,
         "exit": exit_count,
+        "rfid_pending": rfid_pending,
+        "rfid_match": rfid_match,
+        "rfid_mismatch": rfid_mismatch,
     }
 
 
