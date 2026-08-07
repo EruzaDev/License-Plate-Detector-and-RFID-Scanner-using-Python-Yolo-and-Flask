@@ -57,11 +57,23 @@ from database import (
     save_device_config,
     get_device_config,
     get_sync_status_counts,
+    save_rfid_config,
+    get_rfid_config,
+    remove_rfid_config,
 )
 from camera_system import (start_cameras, latest_frames, frame_locks,
                            list_video_devices, get_camera_assignments,
                            reassign_camera, stop_camera,
                            scan_plate_once_from_device, start_device_mjpeg_stream)
+from rfid_system import (
+    list_rfid_devices,
+    assign_rfid,
+    stop_rfid,
+    get_rfid_assignments,
+    get_last_rfid_scan,
+    start_rfid_from_config,
+    trigger_manual_rfid_scan,
+)
 from sync_worker import CloudSyncWorker
 
 # ---------------------------------------------------------------------------
@@ -131,7 +143,7 @@ def _ensure_auth_schema() -> None:
 
     user_count = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
     if user_count == 0:
-        password_hash = bcrypt.generate_password_hash("changeme123").decode("utf-8")
+        password_hash = bcrypt.generate_password_hash("admin123").decode("utf-8")
         conn.execute(
             """
             INSERT INTO users (name, email, password_hash, role, is_active)
@@ -644,8 +656,14 @@ def users_create():
 @app.route("/guard/device", methods=["GET", "POST"])
 @_role_required("superadmin", "guard")
 def guard_device():
-    """Dedicated guard page for entrance/exit camera assignment."""
+    """Dedicated guard page for entrance/exit camera and RFID assignment."""
     if request.method == "POST":
+        form_type = request.form.get("form_type", "camera")
+
+        if form_type == "rfid":
+            return _handle_rfid_assignment()
+
+        # --- Camera assignment (existing logic) ---
         devices = list_video_devices()
         available_indices = {int(d["index"]) for d in devices}
 
@@ -689,12 +707,64 @@ def guard_device():
         "exit": runtime_assignments.get("exit", saved_assignments.get("exit")),
     }
 
+    rfid_devices = list_rfid_devices()
+    rfid_runtime = get_rfid_assignments()
+    rfid_saved = get_rfid_config()
+    rfid_assignments = {
+        "entrance": rfid_runtime.get("entrance") or rfid_saved.get("entrance"),
+        "exit": rfid_runtime.get("exit") or rfid_saved.get("exit"),
+    }
+
     return render_template(
         "guard_device.html",
         devices=devices,
         assignments=assignments,
         saved_assignments=saved_assignments,
+        rfid_devices=rfid_devices,
+        rfid_assignments=rfid_assignments,
+        rfid_saved=rfid_saved,
     )
+
+
+def _handle_rfid_assignment():
+    """Process RFID scanner assignment form submission."""
+    rfid_devices = list_rfid_devices()
+    available_paths = {d["event_path"] for d in rfid_devices}
+
+    entrance_rfid = request.form.get("entrance_rfid", "").strip()
+    exit_rfid = request.form.get("exit_rfid", "").strip()
+
+    assigned_any = False
+
+    for camera_name, event_path in [("entrance", entrance_rfid), ("exit", exit_rfid)]:
+        if not event_path:
+            # "keep current" selected — skip
+            continue
+
+        if event_path == "__stop__":
+            stop_rfid(camera_name)
+            remove_rfid_config(camera_name)
+            assigned_any = True
+            continue
+
+        if event_path not in available_paths:
+            flash(f"Selected {camera_name} RFID device is not available.", "error")
+            return redirect(url_for("guard_device"))
+
+        try:
+            assign_rfid(camera_name, event_path)
+            save_rfid_config(camera_name, event_path)
+            assigned_any = True
+        except (ValueError, RuntimeError) as exc:
+            flash(f"RFID {camera_name} error: {exc}", "error")
+            return redirect(url_for("guard_device"))
+
+    if assigned_any:
+        flash("RFID scanner assignments saved.", "success")
+    else:
+        flash("No RFID changes were made.", "error")
+
+    return redirect(url_for("guard_device"))
 
 
 @app.route("/guard/review", methods=["GET"])
@@ -1015,6 +1085,102 @@ def api_stop_camera():
     return jsonify({"ok": stopped, "camera": camera_name})
 
 
+# ---------------------------------------------------------------------------
+# RFID scanner API endpoints
+# ---------------------------------------------------------------------------
+@app.route("/api/rfid_devices")
+def api_rfid_devices():
+    """Return available RFID HID devices and current assignments."""
+    rfid_runtime = get_rfid_assignments()
+    rfid_saved = get_rfid_config()
+    merged = {
+        "entrance": rfid_runtime.get("entrance") or rfid_saved.get("entrance"),
+        "exit": rfid_runtime.get("exit") or rfid_saved.get("exit"),
+    }
+    return jsonify({
+        "devices": list_rfid_devices(),
+        "assignments": merged,
+        "saved_assignments": rfid_saved,
+    })
+
+
+@app.route("/api/assign_rfid", methods=["POST"])
+def api_assign_rfid():
+    """
+    Assign an RFID scanner to a camera.
+    JSON body: {"camera": "entrance"|"exit", "event_path": "/dev/input/event5"}
+    """
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Invalid JSON body."}), 400
+
+    camera_name = data.get("camera", "").strip()
+    event_path = data.get("event_path", "").strip()
+
+    if camera_name not in ("entrance", "exit"):
+        return jsonify({"error": "camera must be 'entrance' or 'exit'."}), 400
+    if not event_path:
+        return jsonify({"error": "event_path is required."}), 400
+
+    try:
+        assign_rfid(camera_name, event_path)
+        save_rfid_config(camera_name, event_path)
+    except (ValueError, RuntimeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    return jsonify({"ok": True, "camera": camera_name, "event_path": event_path})
+
+
+@app.route("/api/stop_rfid", methods=["POST"])
+def api_stop_rfid():
+    """
+    Stop an RFID reader for a camera.
+    JSON body: {"camera": "entrance"|"exit"}
+    """
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Invalid JSON body."}), 400
+
+    camera_name = data.get("camera", "").strip()
+    if camera_name not in ("entrance", "exit"):
+        return jsonify({"error": "camera must be 'entrance' or 'exit'."}), 400
+
+    stopped = stop_rfid(camera_name)
+    remove_rfid_config(camera_name)
+    return jsonify({"ok": stopped, "camera": camera_name})
+
+
+@app.route("/api/rfid/last_scan")
+def api_rfid_last_scan():
+    """Return last RFID scan info per camera for dashboard polling."""
+    return jsonify(get_last_rfid_scan())
+
+
+@app.route("/api/rfid/trigger_scan", methods=["POST"])
+def api_rfid_trigger_scan():
+    """
+    Direct scan trigger endpoint for browser barcode / RFID keyboard input.
+    JSON body: {"camera": "entrance"|"exit", "scanned_uid": "08FF20171101"}
+    """
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Invalid JSON body."}), 400
+
+    camera_name = data.get("camera", "").strip().lower()
+    scanned_uid = data.get("scanned_uid", "").strip().upper()
+
+    if camera_name not in ("entrance", "exit"):
+        return jsonify({"error": "camera must be 'entrance' or 'exit'."}), 400
+    if not scanned_uid:
+        return jsonify({"error": "scanned_uid is required."}), 400
+
+    try:
+        res = trigger_manual_rfid_scan(camera_name, scanned_uid)
+        return jsonify(res)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
 @app.route("/api/registered_plates", methods=["GET"])
 def api_registered_plates():
     """Return all registered plates used by fuzzy matching."""
@@ -1171,10 +1337,18 @@ if __name__ == "__main__":
 
     _ensure_auth_schema()
     print("[auth] Login required on dashboard routes")
-    print("[auth] Default admin: admin@campus.local / changeme123 (first run only)")
+    print("[auth] Default admin: admin@campus.local / admin123")
 
     # Load YOLO model; cameras are assigned from the dashboard
     start_cameras()
+
+    # Start RFID readers from saved config
+    rfid_config = get_rfid_config()
+    if rfid_config:
+        start_rfid_from_config(rfid_config)
+        print(f"[rfid] Loaded saved RFID assignments: {rfid_config}")
+    else:
+        print("[rfid] No saved RFID assignments — assign scanners from the dashboard.")
 
     if SYNC_WORKER.enabled:
         SYNC_WORKER.start()

@@ -192,6 +192,14 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_device_config_updated_at
         ON device_config (updated_at DESC)
     """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS rfid_config (
+            camera TEXT PRIMARY KEY,
+            event_path TEXT NOT NULL,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     conn.commit()
 
 
@@ -352,15 +360,16 @@ def get_registered_plate_records(limit: int = 200) -> list:
 
 
 def get_pending_rfid_verifications(limit: int = 20) -> list:
-    """Return detections that require RFID scan and are still pending."""
+    """Return detections that require RFID scan and are still pending, newest first."""
     conn = _get_connection()
     rows = conn.execute(
         """
         SELECT id, plate_number, camera, timestamp, image_path, confidence,
                rfid_status, expected_rfid_uid, scanned_rfid_uid, rfid_verified_at
         FROM detections
-        WHERE rfid_status = 'NOT_SCANNED'
-        ORDER BY id ASC
+        WHERE UPPER(COALESCE(rfid_status, '')) IN ('NOT_SCANNED', 'NOT_REQUIRED', 'PENDING')
+           OR (scanned_rfid_uid IS NULL AND rfid_verified_at IS NULL)
+        ORDER BY timestamp DESC, id DESC
         LIMIT ?
         """,
         (limit,),
@@ -392,26 +401,34 @@ def verify_detection_rfid(detection_id: int, scanned_uid: str) -> dict | None:
 
     expected_uid = _normalize_rfid_uid(row["expected_rfid_uid"])
     if not expected_uid:
-        raise ValueError("This detection does not require RFID verification.")
+        # Check if the plate itself is in registered_plates or users table with an RFID
+        plate_str = str(row["plate_number"] or "").strip()
+        reg_row = conn.execute(
+            """
+            SELECT rfid_uid FROM registered_plates WHERE plate_number = ?
+            UNION
+            SELECT rfid_uid FROM users WHERE rfid_uid IS NOT NULL AND rfid_uid != ''
+            """,
+            (plate_str,),
+        ).fetchone()
+        if reg_row and reg_row["rfid_uid"]:
+            expected_uid = _normalize_rfid_uid(reg_row["rfid_uid"])
 
-    current_status = str(row["rfid_status"] or "NOT_REQUIRED").upper()
-    if current_status not in ("NOT_SCANNED", "MISMATCH"):
-        raise ValueError("RFID verification is already finalized for this detection.")
-
-    new_status = "MATCH" if normalized_uid == expected_uid else "MISMATCH"
+    new_status = "MATCH" if (expected_uid and normalized_uid == expected_uid) else "MISMATCH"
     verified_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn.execute(
         """
         UPDATE detections
         SET rfid_status = ?,
             scanned_rfid_uid = ?,
+            expected_rfid_uid = COALESCE(expected_rfid_uid, ?),
             rfid_verified_at = ?,
             sync_status = 'PENDING',
             sync_last_error = NULL,
             sync_synced_at = NULL
         WHERE id = ?
         """,
-        (new_status, normalized_uid, verified_at, detection_id),
+        (new_status, normalized_uid, expected_uid, verified_at, detection_id),
     )
     conn.commit()
 
@@ -967,6 +984,58 @@ def get_device_config() -> dict[str, int]:
         if camera_name in {"entrance", "exit"} and isinstance(device_index, int):
             if device_index >= 0:
                 assignments[camera_name] = int(device_index)
+    return assignments
+
+
+def save_rfid_config(camera: str, event_path: str) -> None:
+    """Persist RFID scanner -> camera assignment."""
+    camera_name = str(camera or "").strip().lower()
+    if camera_name not in {"entrance", "exit"}:
+        raise ValueError("camera must be 'entrance' or 'exit'.")
+    if not event_path or not event_path.strip():
+        raise ValueError("event_path is required.")
+
+    conn = _get_connection()
+    conn.execute(
+        """
+        INSERT INTO rfid_config (camera, event_path, updated_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(camera) DO UPDATE SET
+            event_path = excluded.event_path,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (camera_name, event_path.strip()),
+    )
+    conn.commit()
+
+
+def remove_rfid_config(camera: str) -> None:
+    """Remove persisted RFID scanner assignment for a camera."""
+    camera_name = str(camera or "").strip().lower()
+    if camera_name not in {"entrance", "exit"}:
+        return
+    conn = _get_connection()
+    conn.execute("DELETE FROM rfid_config WHERE camera = ?", (camera_name,))
+    conn.commit()
+
+
+def get_rfid_config() -> dict[str, str]:
+    """Return persisted RFID scanner assignments {camera: event_path}."""
+    conn = _get_connection()
+    rows = conn.execute(
+        """
+        SELECT camera, event_path
+        FROM rfid_config
+        WHERE camera IN ('entrance', 'exit')
+        """
+    ).fetchall()
+
+    assignments: dict[str, str] = {}
+    for row in rows:
+        camera_name = str(row["camera"]).strip().lower()
+        event_path = str(row["event_path"]).strip()
+        if camera_name in {"entrance", "exit"} and event_path:
+            assignments[camera_name] = event_path
     return assignments
 
 

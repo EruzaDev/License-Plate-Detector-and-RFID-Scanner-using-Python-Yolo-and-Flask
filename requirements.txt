@@ -16,3 +16,4 @@ reportlab
 requests
 fastapi
 uvicorn
+evdev

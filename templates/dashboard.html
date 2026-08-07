@@ -95,6 +95,7 @@
         .stat-card.entrance .value { color: #22c55e; }
         .stat-card.exit .value     { color: #f97316; }
         .stat-card.today .value    { color: #a78bfa; }
+        .stat-card.rfid .value     { color: #c084fc; }
 
         /* ====== Camera Device Selector ====== */
         .device-selector {
@@ -160,6 +161,14 @@
             background: #6366f1;
         }
         .device-card .btn-refresh:hover { background: #4f46e5; }
+        .device-card .btn-rfid-assign {
+            background: #7c3aed;
+        }
+        .device-card .btn-rfid-assign:hover { background: #6d28d9; }
+        .device-card .btn-rfid-stop {
+            background: #ef4444;
+        }
+        .device-card .btn-rfid-stop:hover { background: #dc2626; }
         .device-card button:disabled {
             background: #374151;
             cursor: not-allowed;
@@ -170,6 +179,53 @@
         }
         .assign-ok   { color: #22c55e; }
         .assign-fail { color: #ef4444; }
+
+        /* ====== RFID scan status ====== */
+        .rfid-status-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+        @media (max-width: 768px) {
+            .rfid-status-row { grid-template-columns: 1fr; }
+        }
+        .rfid-status-card {
+            background: #1a1d2e;
+            border: 1px solid #2d3348;
+            border-radius: 12px;
+            padding: .8rem 1rem;
+        }
+        .rfid-status-card .rfid-label {
+            font-size: .82rem;
+            font-weight: 600;
+            color: #94a3b8;
+            margin-bottom: .35rem;
+        }
+        .rfid-status-card .rfid-uid {
+            font-family: 'Courier New', monospace;
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: #c084fc;
+            margin-bottom: .2rem;
+        }
+        .rfid-status-card .rfid-detail {
+            font-size: .78rem;
+            color: #64748b;
+        }
+        .rfid-result-badge {
+            display: inline-block;
+            padding: .1rem .45rem;
+            border-radius: 6px;
+            font-size: .72rem;
+            font-weight: 700;
+            margin-left: .3rem;
+        }
+        .rfid-result-badge.match { background: rgba(34,197,94,.2); color: #22c55e; }
+        .rfid-result-badge.mismatch { background: rgba(239,68,68,.2); color: #ef4444; }
+        .rfid-result-badge.no-pending { background: rgba(250,204,21,.15); color: #fbbf24; }
+        .rfid-result-badge.scanned { background: rgba(96,165,250,.15); color: #60a5fa; }
+        .rfid-result-badge.offline { background: rgba(100,116,139,.2); color: #94a3b8; }
 
         /* ====== Camera feeds ====== */
         .cameras {
@@ -654,9 +710,38 @@
             <button class="btn-stop" onclick="stopDevice('exit')">Stop</button>
             <span class="assign-status" id="status-exit"></span>
         </div>
+        <div class="device-card">
+            <label>&#128179; Entrance RFID:</label>
+            <select id="rfid-entrance"><option value="">— scan for devices —</option></select>
+            <button class="btn-rfid-assign" onclick="assignRfid('entrance')">Start</button>
+            <button class="btn-rfid-stop" onclick="stopRfid('entrance')">Stop</button>
+            <span class="assign-status" id="rfid-status-entrance"></span>
+        </div>
+        <div class="device-card">
+            <label>&#128179; Exit RFID:</label>
+            <select id="rfid-exit"><option value="">— scan for devices —</option></select>
+            <button class="btn-rfid-assign" onclick="assignRfid('exit')">Start</button>
+            <button class="btn-rfid-stop" onclick="stopRfid('exit')">Stop</button>
+            <span class="assign-status" id="rfid-status-exit"></span>
+        </div>
         <div class="device-card" style="grid-column: 1 / -1; justify-content: center;">
             <button class="btn-refresh" onclick="scanDevices()">&#128269; Scan for Cameras</button>
+            <button class="btn-refresh" onclick="scanRfidDevices()" style="background:#7c3aed;">&#128179; Scan for RFID</button>
             <span class="assign-status" id="status-scan"></span>
+        </div>
+    </div>
+
+    <!-- ====== RFID Scan Status ====== -->
+    <div class="rfid-status-row">
+        <div class="rfid-status-card">
+            <div class="rfid-label">&#128179; Entrance RFID — Live Status</div>
+            <div class="rfid-uid" id="rfid-last-uid-entrance">—</div>
+            <div class="rfid-detail" id="rfid-last-detail-entrance">Waiting for scans...</div>
+        </div>
+        <div class="rfid-status-card">
+            <div class="rfid-label">&#128179; Exit RFID — Live Status</div>
+            <div class="rfid-uid" id="rfid-last-uid-exit">—</div>
+            <div class="rfid-detail" id="rfid-last-detail-exit">Waiting for scans...</div>
         </div>
     </div>
 
@@ -1234,16 +1319,178 @@
         if (ev.key === 'Enter') submitDetectionCorrection();
     });
 
+    // ---- RFID device management ----
+    async function loadRfidDevices() {
+        try {
+            const res = await fetch('/api/rfid_devices');
+            const data = await res.json();
+            const devices = data.devices || [];
+            const assignments = data.assignments || {};
+
+            ['entrance', 'exit'].forEach(cam => {
+                const sel = document.getElementById('rfid-' + cam);
+                if (!sel) return;
+                sel.innerHTML = '';
+
+                const noneOpt = document.createElement('option');
+                noneOpt.value = '';
+                noneOpt.textContent = '— not assigned —';
+                sel.appendChild(noneOpt);
+
+                devices.forEach(d => {
+                    const opt = document.createElement('option');
+                    opt.value = d.event_path;
+                    let label = d.name + ' (' + d.event_path + ')';
+                    if (d.in_use_by) label += ' [' + d.in_use_by + ']';
+                    opt.textContent = label;
+                    if (assignments[cam] === d.event_path) opt.selected = true;
+                    sel.appendChild(opt);
+                });
+            });
+            return devices.length;
+        } catch (e) {
+            console.error('RFID devices error:', e);
+            return 0;
+        }
+    }
+
+    async function scanRfidDevices() {
+        const statusEl = document.getElementById('status-scan');
+        statusEl.textContent = 'Scanning RFID…';
+        statusEl.className = 'assign-status';
+        const count = await loadRfidDevices();
+        if (count > 0) {
+            statusEl.textContent = '✓ Found ' + count + ' RFID device(s)';
+            statusEl.className = 'assign-status assign-ok';
+        } else {
+            statusEl.textContent = '✗ No RFID devices found';
+            statusEl.className = 'assign-status assign-fail';
+        }
+        setTimeout(() => { statusEl.textContent = ''; }, 5000);
+    }
+
+    async function assignRfid(cameraName) {
+        const sel = document.getElementById('rfid-' + cameraName);
+        const statusEl = document.getElementById('rfid-status-' + cameraName);
+        const eventPath = sel.value;
+        if (!eventPath) {
+            statusEl.textContent = '✗ Select a device first';
+            statusEl.className = 'assign-status assign-fail';
+            setTimeout(() => { statusEl.textContent = ''; }, 3000);
+            return;
+        }
+
+        statusEl.textContent = 'Starting…';
+        statusEl.className = 'assign-status';
+
+        try {
+            const res = await fetch('/api/assign_rfid', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({camera: cameraName, event_path: eventPath}),
+            });
+            const data = await res.json();
+            if (data.ok) {
+                statusEl.textContent = '✓ Running';
+                statusEl.className = 'assign-status assign-ok';
+            } else {
+                statusEl.textContent = '✗ ' + (data.error || 'Failed');
+                statusEl.className = 'assign-status assign-fail';
+            }
+        } catch (e) {
+            statusEl.textContent = '✗ Error';
+            statusEl.className = 'assign-status assign-fail';
+        }
+        setTimeout(() => { statusEl.textContent = ''; }, 4000);
+    }
+
+    async function stopRfid(cameraName) {
+        const statusEl = document.getElementById('rfid-status-' + cameraName);
+        statusEl.textContent = 'Stopping…';
+        statusEl.className = 'assign-status';
+
+        try {
+            const res = await fetch('/api/stop_rfid', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({camera: cameraName}),
+            });
+            const data = await res.json();
+            if (data.ok) {
+                statusEl.textContent = '✓ Stopped';
+                statusEl.className = 'assign-status assign-ok';
+            } else {
+                statusEl.textContent = 'Not running';
+                statusEl.className = 'assign-status assign-fail';
+            }
+        } catch (e) {
+            statusEl.textContent = '✗ Error';
+            statusEl.className = 'assign-status assign-fail';
+        }
+        setTimeout(() => { statusEl.textContent = ''; }, 4000);
+        loadRfidDevices();
+    }
+
+    function _rfidResultBadge(result) {
+        if (!result) return '';
+        const r = String(result).toUpperCase();
+        if (r === 'ACCESS_GRANTED') return '<span class="rfid-result-badge match">ACCESS GRANTED</span>';
+        if (r === 'FLAGGED_MISMATCH') return '<span class="rfid-result-badge mismatch">MISMATCH</span>';
+        if (r === 'NO_PENDING') return '<span class="rfid-result-badge no-pending">NO PENDING</span>';
+        if (r === 'SCANNED') return '<span class="rfid-result-badge scanned">SCANNED</span>';
+        if (r.startsWith('ERROR')) return '<span class="rfid-result-badge mismatch">ERROR</span>';
+        return '<span class="rfid-result-badge scanned">' + r + '</span>';
+    }
+
+    async function loadRfidLastScan() {
+        try {
+            const res = await fetch('/api/rfid/last_scan');
+            const data = await res.json();
+
+            ['entrance', 'exit'].forEach(cam => {
+                const info = data[cam];
+                const uidEl = document.getElementById('rfid-last-uid-' + cam);
+                const detailEl = document.getElementById('rfid-last-detail-' + cam);
+                if (!uidEl || !detailEl) return;
+
+                if (!info || !info.running) {
+                    uidEl.textContent = '—';
+                    detailEl.innerHTML = '<span class="rfid-result-badge offline">OFFLINE</span> Scanner not assigned';
+                    return;
+                }
+
+                if (info.error) {
+                    uidEl.textContent = '⚠';
+                    detailEl.innerHTML = '<span class="rfid-result-badge mismatch">ERROR</span> ' + info.error;
+                    return;
+                }
+
+                if (info.last_uid) {
+                    uidEl.textContent = info.last_uid;
+                    detailEl.innerHTML = (info.last_scan_at || '') + ' ' + _rfidResultBadge(info.last_result);
+                } else {
+                    uidEl.textContent = '—';
+                    detailEl.innerHTML = '<span class="rfid-result-badge scanned">READY</span> Waiting for scan…';
+                }
+            });
+        } catch (e) {
+            console.error('RFID last scan error:', e);
+        }
+    }
+
     // ---- Initial load + auto-refresh ----
     loadDevices();
+    loadRfidDevices();
     loadStats();
     loadDetections();
     loadPendingManualInputs();
+    loadRfidLastScan();
     setInterval(() => {
         loadStats();
         loadDetections(dateInput.value || null);
         loadPendingManualInputs();
-    }, 5000);
+        loadRfidLastScan();
+    }, 4000);
 </script>
 
 </body>

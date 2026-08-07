@@ -270,68 +270,51 @@
                 </div>
 
                 <div class="field full" id="user-plate-section">
-                    <div class="scan-widget">
-                        <h3>License Plate Scanner</h3>
-                        <p>Select a physical camera device, scan plate, retry if needed, then optionally override manually.</p>
-
-                        <div class="form-grid">
-                            <div class="field">
-                                <label for="scan-device">Physical Camera Device</label>
-                                <select id="scan-device">
-                                    <option value="">scan devices first</option>
-                                </select>
-                            </div>
-                        </div>
-
-                        <div class="button-row">
-                            <button type="button" class="btn-secondary" id="btn-load-devices">Scan Devices</button>
-                            <button type="button" id="btn-view-camera">View Camera</button>
-                            <button type="button" id="btn-scan-plate">Scan Plate</button>
-                            <button type="button" class="btn-secondary" id="btn-retry-scan">Retry Scan</button>
-                        </div>
-
-                        <img id="scan-preview" class="camera-preview" alt="Selected camera preview" style="display:none;">
-
-                        <div class="status-text" id="plate-scan-status"></div>
-
-                        <div class="form-grid" style="margin-top:.65rem;">
-                            <div class="field">
-                                <label for="scanned-plate-display">Scanned Plate</label>
-                                <input id="scanned-plate-display" class="readonly" readonly placeholder="No scan yet">
-                            </div>
-                            <div class="field">
-                                <label for="manual-plate">Manual Plate (optional override)</label>
-                                <input id="manual-plate" name="manual_plate" placeholder="Enter if scan is wrong">
-                            </div>
-                        </div>
-
-                        <input type="hidden" id="scanned-plate-hidden" name="scanned_plate">
-                        <input type="hidden" id="plate-scan-source" name="plate_scan_source">
-
-                        <p class="muted" style="margin-top:.25rem; margin-bottom:0;">
-                            If manual plate differs from scanned output, the correction is learned automatically when you save.
-                        </p>
-                    </div>
+                    <label for="manual-plate">License Plate *</label>
+                    <input id="manual-plate" name="manual_plate" placeholder="e.g. ABC 1234 or ABC1234" autocomplete="off" style="text-transform:uppercase; font-family:monospace; font-weight:700; font-size:1rem; letter-spacing:0.04em;">
+                    <p class="muted" style="margin-top:.25rem; margin-bottom:0; font-size:.8rem;">
+                        Enter the vehicle license plate number associated with this driver.
+                    </p>
+                    <input type="hidden" id="scanned-plate-hidden" name="scanned_plate">
+                    <input type="hidden" id="plate-scan-source" name="plate_scan_source">
                 </div>
 
                 <div class="field full" id="user-rfid-section">
-                    <div class="scan-widget">
-                        <h3>RFID Scan Widget</h3>
-                        <p>Prompt for RFID scan/input and save the UID to the account.</p>
-
-                        <div class="form-grid">
-                            <div class="field">
-                                <label for="rfid-uid">RFID UID</label>
-                                <input id="rfid-uid" name="rfid_uid" placeholder="No RFID scanned yet">
+                    <label style="margin-bottom:.35rem;">RFID Tag Assignment *</label>
+                    <div class="scan-widget" style="border: 1px solid #3b82f6; background: #0c1527; padding: 1rem; border-radius: 12px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:.5rem;">
+                            <div>
+                                <h3 style="color:#93c5fd; margin:0 0 .2rem; font-size:0.95rem;">&#128179; Live RFID Scanner</h3>
+                                <p style="margin:0; color:#94a3b8; font-size:.82rem;">
+                                    Simply swipe the driver's RFID card on the scanner. It will be verified and saved automatically.
+                                </p>
                             </div>
-                            <div class="field">
-                                <label>&nbsp;</label>
-                                <div class="button-row" style="margin-top:0;">
-                                    <button type="button" id="btn-open-rfid">Scan RFID</button>
-                                    <button type="button" class="btn-muted" id="btn-clear-rfid">Clear</button>
-                                </div>
+                            <div id="rfid-pulse-badge" style="display:inline-flex; align-items:center; gap:.4rem; background:rgba(34,197,94,0.15); border:1px solid rgba(34,197,94,0.5); color:#86efac; padding:.3rem .65rem; border-radius:999px; font-size:.78rem; font-weight:700;">
+                                <span style="width:8px; height:8px; border-radius:50%; background:#22c55e; display:inline-block; box-shadow:0 0 8px #22c55e;"></span>
+                                <span id="rfid-badge-text">Scanner Active</span>
                             </div>
                         </div>
+
+                        <!-- RFID Display Card (No textbox) -->
+                        <div id="rfid-card-box" style="margin-top:.85rem; background: #070e1c; border: 1px solid #1e293b; border-radius: 10px; padding: .85rem 1rem; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .7rem; transition: border-color .3s, box-shadow .3s;">
+                            <div>
+                                <div style="font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; color: #64748b; font-weight: 700; margin-bottom: .25rem;">
+                                    Captured RFID UID
+                                </div>
+                                <div id="rfid-display-uid" style="font-family: monospace; font-size: 1.25rem; font-weight: 800; color: #64748b; letter-spacing: 0.06em;">
+                                    — Swipe card to scan —
+                                </div>
+                                <div id="rfid-display-detail" style="font-size: .8rem; color: #64748b; margin-top: .2rem;">
+                                    Waiting for hardware scan...
+                                </div>
+                            </div>
+                            <div style="display:flex; align-items:center; gap:.5rem;">
+                                <button type="button" class="btn-muted" id="btn-clear-rfid" style="font-size:.8rem; padding:.4rem .75rem;">Clear / Re-scan</button>
+                            </div>
+                        </div>
+
+                        <!-- Hidden input to save the scanned UID on form submit -->
+                        <input type="hidden" id="rfid-uid" name="rfid_uid">
                     </div>
                 </div>
 
@@ -383,37 +366,22 @@
     </section>
 </main>
 
-<div class="modal hidden" id="rfid-modal">
-    <div class="modal-card">
-        <h3>Scan RFID UID</h3>
-        <p>Scan the RFID tag now, or type it manually, then press Save.</p>
-        <input id="rfid-modal-input" placeholder="Scan/input RFID UID">
-        <div class="button-row" style="margin-top:.7rem;">
-            <button type="button" id="btn-save-rfid">Save RFID</button>
-            <button type="button" class="btn-muted" id="btn-cancel-rfid">Cancel</button>
-        </div>
-    </div>
-</div>
-
 <script>
 (() => {
     const nameField = document.getElementById('name-field');
     const nameInput = document.getElementById('name');
-    const scanDeviceSel = document.getElementById('scan-device');
-    const scanPreview = document.getElementById('scan-preview');
-    const plateScanStatus = document.getElementById('plate-scan-status');
-    const scannedPlateDisplay = document.getElementById('scanned-plate-display');
-    const scannedPlateHidden = document.getElementById('scanned-plate-hidden');
-    const plateScanSource = document.getElementById('plate-scan-source');
     const manualPlate = document.getElementById('manual-plate');
     const roleSel = document.getElementById('role');
     const userPlateSection = document.getElementById('user-plate-section');
     const userRfidSection = document.getElementById('user-rfid-section');
     const rfidUid = document.getElementById('rfid-uid');
+    const rfidDisplayUid = document.getElementById('rfid-display-uid');
+    const rfidDisplayDetail = document.getElementById('rfid-display-detail');
+    const rfidCardBox = document.getElementById('rfid-card-box');
+    const rfidBadgeText = document.getElementById('rfid-badge-text');
     const form = document.getElementById('create-user-form');
 
-    const rfidModal = document.getElementById('rfid-modal');
-    const rfidModalInput = document.getElementById('rfid-modal-input');
+    let lastKnownRfidEpoch = 0;
 
     function normalizePlate(v) {
         return (v || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -422,6 +390,81 @@
     function normalizeRfid(v) {
         return (v || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
     }
+
+    function updateRfidCard(uid, sourceText) {
+        const cleanUid = normalizeRfid(uid);
+        if (!cleanUid) return;
+
+        rfidUid.value = cleanUid;
+        rfidDisplayUid.textContent = cleanUid;
+        rfidDisplayUid.style.color = '#22c55e';
+        rfidDisplayDetail.textContent = '✓ Scanned & Verified (' + (sourceText || 'Hardware Reader') + ')';
+        rfidDisplayDetail.style.color = '#86efac';
+
+        if (rfidBadgeText) rfidBadgeText.textContent = 'Tag Captured';
+
+        if (rfidCardBox) {
+            rfidCardBox.style.borderColor = '#22c55e';
+            rfidCardBox.style.boxShadow = '0 0 15px rgba(34, 197, 94, 0.35)';
+            setTimeout(() => {
+                rfidCardBox.style.borderColor = '#1e293b';
+                rfidCardBox.style.boxShadow = 'none';
+            }, 1800);
+        }
+    }
+
+    function clearRfidCard() {
+        rfidUid.value = '';
+        rfidDisplayUid.textContent = '— Swipe card to scan —';
+        rfidDisplayUid.style.color = '#64748b';
+        rfidDisplayDetail.textContent = 'Waiting for hardware scan...';
+        rfidDisplayDetail.style.color = '#64748b';
+        if (rfidBadgeText) rfidBadgeText.textContent = 'Scanner Active';
+    }
+
+    // ---- Poll Hardware Reader Scans ----
+    async function pollLiveRfid() {
+        try {
+            const res = await fetch('/api/rfid/last_scan');
+            const data = await res.json();
+            const latestUid = (data.latest_scanned_uid || '').trim();
+            const latestEpoch = Number(data.latest_scanned_epoch) || 0;
+            const latestCam = data.latest_scanned_camera || 'hardware';
+
+            if (latestUid && latestEpoch > lastKnownRfidEpoch) {
+                if (lastKnownRfidEpoch > 0) {
+                    updateRfidCard(latestUid, latestCam.toUpperCase() + ' Reader');
+                }
+                lastKnownRfidEpoch = latestEpoch;
+            }
+        } catch (_e) {}
+    }
+
+    // ---- Global Keyboard / Barcode Reader Interceptor ----
+    let globalKeyBuffer = [];
+    let lastKeyTime = 0;
+
+    window.addEventListener('keydown', (ev) => {
+        const now = Date.now();
+        if (ev.key === 'Shift' || ev.key === 'Control' || ev.key === 'Alt' || ev.key === 'Meta') return;
+
+        if (now - lastKeyTime > 120) {
+            globalKeyBuffer = [];
+        }
+        lastKeyTime = now;
+
+        if (ev.key === 'Enter') {
+            if (globalKeyBuffer.length >= 4) {
+                const scannedStr = normalizeRfid(globalKeyBuffer.join(''));
+                if (scannedStr) {
+                    updateRfidCard(scannedStr, 'Instant Scanner');
+                    globalKeyBuffer = [];
+                }
+            }
+        } else if (ev.key.length === 1) {
+            globalKeyBuffer.push(ev.key);
+        }
+    });
 
     function toggleRoleFields() {
         const isUserRole = roleSel.value === 'user';
@@ -433,177 +476,54 @@
         if (!isUserRole) {
             nameInput.value = '';
             manualPlate.value = '';
-            scannedPlateDisplay.value = '';
-            scannedPlateHidden.value = '';
-            plateScanSource.value = '';
-            rfidUid.value = '';
-            plateScanStatus.textContent = 'Guard mode: plate and RFID are disabled.';
+            clearRfidCard();
         }
     }
 
-    async function loadDevices() {
-        plateScanStatus.textContent = 'Loading camera devices...';
-        try {
-            const res = await fetch('/api/devices');
-            const data = await res.json();
-            const devices = data.devices || [];
-            const assignments = data.assignments || {};
-
-            scanDeviceSel.innerHTML = '';
-            const none = document.createElement('option');
-            none.value = '';
-            none.textContent = devices.length ? 'Select device' : 'No devices found';
-            scanDeviceSel.appendChild(none);
-
-            devices.forEach((d) => {
-                const opt = document.createElement('option');
-                opt.value = String(d.index);
-                opt.textContent = d.name + ' (/dev/video' + d.index + ')';
-                scanDeviceSel.appendChild(opt);
-            });
-
-            const preferred = assignments.entrance ?? assignments.exit;
-            if (Number.isInteger(preferred)) {
-                scanDeviceSel.value = String(preferred);
-            }
-
-            plateScanStatus.textContent = devices.length
-                ? 'Devices loaded. Select device and click Scan Plate.'
-                : 'No usable camera devices detected.';
-        } catch (_e) {
-            plateScanStatus.textContent = 'Failed to load devices.';
-        }
-    }
-
-    async function scanPlate() {
-        const deviceIndex = Number.parseInt(scanDeviceSel.value, 10);
-        if (Number.isNaN(deviceIndex)) {
-            plateScanStatus.textContent = 'Select a camera device first.';
-            return;
-        }
-
-        plateScanStatus.textContent = 'Scanning plate...';
-        try {
-            const res = await fetch('/api/scan_plate_once', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({device_index: deviceIndex}),
-            });
-            const data = await res.json();
-            if (!res.ok || !data.ok) {
-                plateScanStatus.textContent = data.error || 'Scan failed. Retry or enter manually.';
-                return;
-            }
-
-            const finalPlate = normalizePlate(data.final_plate || '');
-            const rawPlate = normalizePlate(data.raw_plate || finalPlate);
-
-            scannedPlateDisplay.value = finalPlate || 'UNKNOWN';
-            scannedPlateHidden.value = finalPlate;
-            plateScanSource.value = rawPlate;
-
-            const confPct = ((Number(data.confidence) || 0) * 100).toFixed(1);
-            plateScanStatus.textContent = 'Scan complete: ' + (finalPlate || 'UNKNOWN') + ' (' + confPct + '%). Retry if needed.';
-        } catch (_e) {
-            plateScanStatus.textContent = 'Scan request failed. Retry or enter manually.';
-        }
-    }
-
-    function viewSelectedCamera() {
-        const deviceIndex = Number.parseInt(scanDeviceSel.value, 10);
-        if (Number.isNaN(deviceIndex)) {
-            plateScanStatus.textContent = 'Select a camera device first.';
-            scanPreview.style.display = 'none';
-            scanPreview.removeAttribute('src');
-            return;
-        }
-
-        scanPreview.style.display = 'block';
-        scanPreview.src = '/video/account_creation?device_index=' + deviceIndex + '&t=' + Date.now();
-        plateScanStatus.textContent = 'Live camera preview active for selected device.';
-    }
-
-    function openRfidModal() {
-        rfidModalInput.value = rfidUid.value || '';
-        rfidModal.classList.remove('hidden');
-        rfidModalInput.focus();
-    }
-
-    function closeRfidModal() {
-        rfidModal.classList.add('hidden');
-    }
-
-    function saveRfidFromModal() {
-        rfidUid.value = normalizeRfid(rfidModalInput.value);
-        closeRfidModal();
-    }
-
-    document.getElementById('btn-load-devices').addEventListener('click', loadDevices);
-    document.getElementById('btn-view-camera').addEventListener('click', viewSelectedCamera);
-    document.getElementById('btn-scan-plate').addEventListener('click', scanPlate);
-    document.getElementById('btn-retry-scan').addEventListener('click', scanPlate);
-    scanDeviceSel.addEventListener('change', () => {
-        scanPreview.style.display = 'none';
-        scanPreview.removeAttribute('src');
-    });
     roleSel.addEventListener('change', toggleRoleFields);
-
-    document.getElementById('btn-open-rfid').addEventListener('click', openRfidModal);
-    document.getElementById('btn-clear-rfid').addEventListener('click', () => { rfidUid.value = ''; });
-    document.getElementById('btn-save-rfid').addEventListener('click', saveRfidFromModal);
-    document.getElementById('btn-cancel-rfid').addEventListener('click', closeRfidModal);
-    rfidModalInput.addEventListener('keydown', (ev) => {
-        if (ev.key === 'Enter') {
-            ev.preventDefault();
-            saveRfidFromModal();
-        }
-    });
+    document.getElementById('btn-clear-rfid').addEventListener('click', clearRfidCard);
 
     manualPlate.addEventListener('input', () => {
-        manualPlate.value = normalizePlate(manualPlate.value);
-    });
-    rfidUid.addEventListener('input', () => {
-        rfidUid.value = normalizeRfid(rfidUid.value);
+        manualPlate.value = manualPlate.value.toUpperCase();
     });
 
     form.addEventListener('submit', (ev) => {
         const role = roleSel.value;
-        const finalPlate = normalizePlate(manualPlate.value) || normalizePlate(scannedPlateHidden.value);
+        const finalPlate = normalizePlate(manualPlate.value);
         const finalRfid = normalizeRfid(rfidUid.value);
 
         if (role === 'user' && !nameInput.value.trim()) {
             ev.preventDefault();
-            alert('User account requires a name.');
+            alert('User account requires a driver name.');
             return;
         }
         if (role === 'user' && !finalPlate) {
             ev.preventDefault();
-            alert('User account requires a plate scan or manual plate input.');
+            alert('User account requires a license plate.');
+            manualPlate.focus();
             return;
         }
         if (role === 'user' && !finalRfid) {
             ev.preventDefault();
-            alert('User account requires RFID scan/input.');
+            alert('User account requires an RFID scan. Please swipe the driver RFID card on the scanner.');
             return;
         }
 
         if (role !== 'user') {
-            scannedPlateHidden.value = '';
-            plateScanSource.value = '';
             manualPlate.value = '';
             rfidUid.value = '';
             return;
         }
 
-        scannedPlateHidden.value = normalizePlate(scannedPlateHidden.value);
-        plateScanSource.value = normalizePlate(plateScanSource.value);
-        manualPlate.value = normalizePlate(manualPlate.value);
+        manualPlate.value = finalPlate;
         rfidUid.value = finalRfid;
     });
 
     toggleRoleFields();
-    loadDevices();
+    pollLiveRfid();
+    setInterval(pollLiveRfid, 800);
 })();
+</script>
 </script>
 </body>
 </html>

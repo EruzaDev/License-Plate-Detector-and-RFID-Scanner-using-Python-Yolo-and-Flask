@@ -37,8 +37,28 @@
             </div>
 
             <div>
-                <label for="rfid_uid">RFID UID</label>
-                <input id="rfid_uid" name="rfid_uid" value="{{ form_data.rfid_uid }}">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.35rem;">
+                    <label for="rfid_uid" style="margin:0;">RFID UID</label>
+                    <span id="rfid-live-badge" style="font-size:0.75rem; color:#86efac; background:rgba(34,197,94,0.15); border:1px solid rgba(34,197,94,0.4); padding:0.15rem 0.5rem; border-radius:999px; font-weight:600;">
+                        ● Auto-Scanner Ready
+                    </span>
+                </div>
+                
+                <div id="rfid-card-box" style="background:#070e1c; border:1px solid #1e293b; border-radius:8px; padding:.75rem 1rem; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:.5rem; transition:border-color .3s, box-shadow .3s;">
+                    <div>
+                        <div id="rfid-display-uid" style="font-family:monospace; font-size:1.15rem; font-weight:800; color:{% if form_data.rfid_uid %}#22c55e{% else %}#64748b{% endif %}; letter-spacing:0.06em;">
+                            {{ form_data.rfid_uid or '— Swipe card to scan —' }}
+                        </div>
+                        <div id="rfid-display-detail" style="font-size:0.78rem; color:#64748b; margin-top:0.15rem;">
+                            {% if form_data.rfid_uid %}Currently assigned RFID tag{% else %}Waiting for hardware scan...{% endif %}
+                        </div>
+                    </div>
+                    <div>
+                        <button type="button" class="btn btn-muted" id="btn-clear-rfid" style="font-size:0.75rem; padding:0.3rem 0.6rem;">Clear</button>
+                    </div>
+                </div>
+
+                <input type="hidden" id="rfid_uid" name="rfid_uid" value="{{ form_data.rfid_uid }}">
             </div>
 
             <div>
@@ -130,6 +150,106 @@
     });
 
     wireRemoveButtons();
+
+    // ---- Live RFID Hardware Polling & Global Keystroke Interceptor ----
+    const rfidInput = document.getElementById('rfid_uid');
+    const rfidDisplayUid = document.getElementById('rfid-display-uid');
+    const rfidDisplayDetail = document.getElementById('rfid-display-detail');
+    const rfidCardBox = document.getElementById('rfid-card-box');
+    const rfidLiveBadge = document.getElementById('rfid-live-badge');
+    let lastKnownRfidEpoch = 0;
+
+    function normalizeRfid(v) {
+        return (v || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    }
+
+    function updateRfid(uid, sourceText) {
+        const cleanUid = normalizeRfid(uid);
+        if (!cleanUid || !rfidInput) return;
+
+        rfidInput.value = cleanUid;
+        if (rfidDisplayUid) {
+            rfidDisplayUid.textContent = cleanUid;
+            rfidDisplayUid.style.color = '#22c55e';
+        }
+        if (rfidDisplayDetail) {
+            rfidDisplayDetail.textContent = '✓ Scanned & Verified (' + (sourceText || 'Hardware Reader') + ')';
+            rfidDisplayDetail.style.color = '#86efac';
+        }
+        if (rfidLiveBadge) {
+            rfidLiveBadge.textContent = '● Tag Captured';
+        }
+        if (rfidCardBox) {
+            rfidCardBox.style.borderColor = '#22c55e';
+            rfidCardBox.style.boxShadow = '0 0 12px rgba(34, 197, 94, 0.35)';
+            setTimeout(() => {
+                rfidCardBox.style.borderColor = '#1e293b';
+                rfidCardBox.style.boxShadow = 'none';
+            }, 1800);
+        }
+    }
+
+    function clearRfid() {
+        if (rfidInput) rfidInput.value = '';
+        if (rfidDisplayUid) {
+            rfidDisplayUid.textContent = '— Swipe card to scan —';
+            rfidDisplayUid.style.color = '#64748b';
+        }
+        if (rfidDisplayDetail) {
+            rfidDisplayDetail.textContent = 'Waiting for hardware scan...';
+            rfidDisplayDetail.style.color = '#64748b';
+        }
+        if (rfidLiveBadge) {
+            rfidLiveBadge.textContent = '● Auto-Scanner Ready';
+        }
+    }
+
+    document.getElementById('btn-clear-rfid')?.addEventListener('click', clearRfid);
+
+    async function pollLiveRfid() {
+        try {
+            const res = await fetch('/api/rfid/last_scan');
+            const data = await res.json();
+            const latestUid = (data.latest_scanned_uid || '').trim();
+            const latestEpoch = Number(data.latest_scanned_epoch) || 0;
+            const latestCam = data.latest_scanned_camera || 'hardware';
+
+            if (latestUid && latestEpoch > lastKnownRfidEpoch) {
+                if (lastKnownRfidEpoch > 0) {
+                    updateRfid(latestUid, latestCam.toUpperCase() + ' Reader');
+                }
+                lastKnownRfidEpoch = latestEpoch;
+            }
+        } catch (_e) {}
+    }
+
+    let globalKeyBuffer = [];
+    let lastKeyTime = 0;
+
+    window.addEventListener('keydown', (ev) => {
+        const now = Date.now();
+        if (ev.key === 'Shift' || ev.key === 'Control' || ev.key === 'Alt' || ev.key === 'Meta') return;
+
+        if (now - lastKeyTime > 120) {
+            globalKeyBuffer = [];
+        }
+        lastKeyTime = now;
+
+        if (ev.key === 'Enter') {
+            if (globalKeyBuffer.length >= 4) {
+                const scannedStr = normalizeRfid(globalKeyBuffer.join(''));
+                if (scannedStr) {
+                    updateRfid(scannedStr, 'Instant Scanner');
+                    globalKeyBuffer = [];
+                }
+            }
+        } else if (ev.key.length === 1) {
+            globalKeyBuffer.push(ev.key);
+        }
+    });
+
+    pollLiveRfid();
+    setInterval(pollLiveRfid, 800);
 })();
 </script>
 {% endblock %}

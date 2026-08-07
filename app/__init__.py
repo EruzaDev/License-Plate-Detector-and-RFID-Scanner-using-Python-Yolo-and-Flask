@@ -17,7 +17,7 @@ def _seed_default_superadmin() -> None:
     default_admin = User(
         name="Admin",
         email="admin@campus.local",
-        password_hash=bcrypt.generate_password_hash("changeme123").decode("utf-8"),
+        password_hash=bcrypt.generate_password_hash("admin123").decode("utf-8"),
         role="superadmin",
         rfid_uid=None,
         is_active=1,

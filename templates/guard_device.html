@@ -84,6 +84,10 @@
             cursor: pointer;
         }
         button:hover { background: #1d4ed8; }
+        .btn-rfid {
+            background: #7c3aed;
+        }
+        .btn-rfid:hover { background: #6d28d9; }
         .flash {
             border-radius: 8px;
             padding: .55rem .7rem;
@@ -105,11 +109,25 @@
             min-height: 240px;
             object-fit: contain;
         }
+        .section-icon {
+            display: inline-block;
+            margin-right: .3rem;
+            font-size: 1.1rem;
+        }
+        .rfid-badge {
+            display: inline-block;
+            padding: .15rem .5rem;
+            border-radius: 6px;
+            font-size: .78rem;
+            font-weight: 600;
+        }
+        .rfid-badge.active { background: rgba(34,197,94,.2); color: #22c55e; }
+        .rfid-badge.inactive { background: rgba(100,116,139,.2); color: #94a3b8; }
     </style>
 </head>
 <body>
     <header class="topbar">
-        <strong>Guard Panel: Camera Assignment</strong>
+        <strong>Guard Panel: Device Assignment</strong>
         <nav>
             <a href="/">Dashboard</a>
             <a href="/users">Users</a>
@@ -128,14 +146,16 @@
             {% endif %}
         {% endwith %}
 
+        <!-- ====== Camera Assignment ====== -->
         <section class="card">
-            <h1 style="margin-bottom:.35rem;">Assign Entry and Exit Cameras</h1>
+            <h1 style="margin-bottom:.35rem;"><span class="section-icon">&#127909;</span>Assign Entry and Exit Cameras</h1>
             <p class="muted">
                 Pick an entry camera and optionally an exit camera. If exit is left blank or duplicates entry,
                 the system auto-assigns the remaining detected device.
             </p>
 
             <form method="post" action="/guard/device">
+                <input type="hidden" name="form_type" value="camera">
                 <div class="grid-2">
                     <div>
                         <label for="entrance_device">Entry Camera Device</label>
@@ -171,12 +191,101 @@
                 </div>
 
                 <div style="margin-top:.9rem; display:flex; gap:.55rem; align-items:center; flex-wrap:wrap;">
-                    <button type="submit">Save Assignment</button>
+                    <button type="submit">Save Camera Assignment</button>
                     <span class="muted">Saved config: entry={{ saved_assignments.get('entrance', 'none') }}, exit={{ saved_assignments.get('exit', 'none') }}</span>
                 </div>
             </form>
         </section>
 
+        <!-- ====== RFID Scanner Assignment ====== -->
+        <section class="card">
+            <h2 style="margin-bottom:.35rem;"><span class="section-icon">&#128179;</span>Assign RFID Scanners</h2>
+            <p class="muted">
+                Select which USB RFID scanner to use for the entrance and exit gates.
+                Scanners are automatically detected as USB HID keyboard devices.
+                When a card is scanned, the system auto-verifies it against the latest vehicle detection on that camera.
+            </p>
+
+            {% if rfid_devices %}
+            <form method="post" action="/guard/device">
+                <input type="hidden" name="form_type" value="rfid">
+                <div class="grid-2">
+                    <div>
+                        <label for="entrance_rfid">Entry RFID Scanner</label>
+                        <select id="entrance_rfid" name="entrance_rfid">
+                            <option value="">keep current</option>
+                            <option value="__stop__"
+                                {% if not rfid_assignments.entrance %}selected{% endif %}
+                            >&#x2716; Stop / Unassign</option>
+                            {% for rd in rfid_devices %}
+                                <option
+                                    value="{{ rd.event_path }}"
+                                    {% if rfid_assignments.entrance == rd.event_path %}selected{% endif %}
+                                >
+                                    {{ rd.name }} ({{ rd.event_path }})
+                                    {% if not rd.accessible %} [Permission Required]{% endif %}
+                                    {% if rd.in_use_by %} [In Use: {{ rd.in_use_by }}]{% endif %}
+                                </option>
+                            {% endfor %}
+                        </select>
+                        <div class="status-line">
+                            Current:
+                            {% if rfid_assignments.entrance %}
+                                <span class="rfid-badge active">Active</span> {{ rfid_assignments.entrance }}
+                            {% else %}
+                                <span class="rfid-badge inactive">Not assigned</span>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    <div>
+                        <label for="exit_rfid">Exit RFID Scanner</label>
+                        <select id="exit_rfid" name="exit_rfid">
+                            <option value="">keep current</option>
+                            <option value="__stop__"
+                                {% if not rfid_assignments.exit %}selected{% endif %}
+                            >&#x2716; Stop / Unassign</option>
+                            {% for rd in rfid_devices %}
+                                <option
+                                    value="{{ rd.event_path }}"
+                                    {% if rfid_assignments.exit == rd.event_path %}selected{% endif %}
+                                >
+                                    {{ rd.name }} ({{ rd.event_path }})
+                                    {% if not rd.accessible %} [Permission Required]{% endif %}
+                                    {% if rd.in_use_by %} [In Use: {{ rd.in_use_by }}]{% endif %}
+                                </option>
+                            {% endfor %}
+                        </select>
+                        <div class="status-line">
+                            Current:
+                            {% if rfid_assignments.exit %}
+                                <span class="rfid-badge active">Active</span> {{ rfid_assignments.exit }}
+                            {% else %}
+                                <span class="rfid-badge inactive">Not assigned</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+
+                <div style="margin-top:.9rem; display:flex; gap:.55rem; align-items:center; flex-wrap:wrap;">
+                    <button type="submit" class="btn-rfid">Save RFID Assignment</button>
+                    <span class="muted">Saved: entry={{ rfid_saved.get('entrance', 'none') }}, exit={{ rfid_saved.get('exit', 'none') }}</span>
+                </div>
+            </form>
+            {% else %}
+            <div style="padding: .8rem; background: rgba(100,116,139,.1); border-radius: 8px; border: 1px solid #334155;">
+                <p class="muted" style="margin: 0;">
+                    No RFID scanner devices detected. Plug in a USB RFID scanner and refresh this page.
+                    <br><br>
+                    <strong>Troubleshooting:</strong> Ensure the app user is in the <code>input</code> group
+                    (<code>sudo usermod -aG input $USER</code>) and re-login. The RFID scanner should appear
+                    as a USB HID keyboard device under <code>/dev/input/</code>.
+                </p>
+            </div>
+            {% endif %}
+        </section>
+
+        <!-- ====== Live Preview ====== -->
         <section class="card">
             <h2 style="margin-bottom:.45rem;">Live Preview</h2>
             <div class="grid-2">
