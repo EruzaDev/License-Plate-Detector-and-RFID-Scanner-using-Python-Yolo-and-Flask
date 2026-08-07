@@ -52,44 +52,56 @@ lpr_system/
 └── README.md
 ```
 
-## Setup Instructions (Raspberry Pi 5)
+## Quick Start (Fresh Git Pull)
 
-### 1. System dependencies
+To set up everything automatically (system packages, USB input permissions, Python venv, AI models, and database):
+
+```bash
+git clone <repository_url>
+cd License-Plate-Detector-and-RFID-Scanner-using-Python-Yolo-and-Flask
+
+# 1. Run the all-in-one setup script
+./setup.sh
+
+# 2. Launch the application
+./start.sh
+```
+
+The dashboard will be live at **http://127.0.0.1:5000** (Default Admin: `admin` / `admin123`).
+
+---
+
+## Manual Setup Instructions (Raspberry Pi 5 / Linux)
+
+### 1. System dependencies & hardware groups
 
 ```bash
 sudo apt update
-sudo apt install -y libopenblas-dev libatlas-base-dev python3-pip
+sudo apt install -y python3 python3-venv python3-pip ffmpeg v4l-utils alsa-utils libgl1-mesa-glx
+sudo usermod -aG input,video $USER
 ```
 
-### 2. Python packages
+### 2. Python Virtual Environment
 
 ```bash
-pip install ultralytics lapx easyocr opencv-python flask numpy --break-system-packages
+python3 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-Or using the requirements file:
-
-```bash
-pip install -r requirements.txt --break-system-packages
-```
-
-### 3. Download all models (run once)
+### 3. Download AI models & EasyOCR assets (run once)
 
 ```bash
 python download_models.py
 ```
 
-This downloads the `license_plate_detector.pt` model and EasyOCR English
-text-detection models.
-Subsequent runs will use the cached files with no network needed.
-
 ### 4. Start the system
 
 ```bash
-python app.py
+# Run with input group permissions
+./start.sh
 ```
-
-The dashboard will be available at **http://<Pi-IP>:5000**.
 
 ## Users Module (App Factory)
 
