@@ -99,6 +99,8 @@ def init_db():
     _ensure_column(conn, "detections", "sync_last_error TEXT")
     _ensure_column(conn, "detections", "sync_last_attempt_at TEXT")
     _ensure_column(conn, "detections", "sync_synced_at TEXT")
+    _ensure_column(conn, "detections", "trip_status TEXT DEFAULT 'ACTIVE'")
+    _ensure_column(conn, "detections", "entry_detection_id INTEGER")
 
     conn.execute(
         """
@@ -215,7 +217,9 @@ def insert_detection(plate_number: str, camera: str, timestamp: str,
                      expected_rfid_uid: str | None = None,
                      scanned_rfid_uid: str | None = None,
                      rfid_verified_at: str | None = None,
-                     sync_status: str | None = None) -> int:
+                     sync_status: str | None = None,
+                     trip_status: str | None = None,
+                     entry_detection_id: int | None = None) -> int:
     """
     Insert a new detection record.
     Returns the new row id.
@@ -236,6 +240,12 @@ def insert_detection(plate_number: str, camera: str, timestamp: str,
     sync_status_value = str(sync_status or "PENDING").upper()
     if sync_status_value not in {"PENDING", "SYNCED", "FAILED"}:
         sync_status_value = "PENDING"
+    
+    clean_cam = str(camera or "").strip().lower()
+    if trip_status is None:
+        trip_status_value = "ACTIVE" if clean_cam == "entrance" else "EXITED"
+    else:
+        trip_status_value = str(trip_status).upper()
 
     cur = conn.execute(
         """INSERT INTO detections (
@@ -258,9 +268,11 @@ def insert_detection(plate_number: str, camera: str, timestamp: str,
                sync_attempts,
                sync_last_error,
                sync_last_attempt_at,
-               sync_synced_at
+               sync_synced_at,
+               trip_status,
+               entry_detection_id
            )
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             normalized_plate,
             camera,
@@ -282,10 +294,167 @@ def insert_detection(plate_number: str, camera: str, timestamp: str,
             None,
             None,
             None,
+            trip_status_value,
+            entry_detection_id,
         ),
     )
     conn.commit()
     return cur.lastrowid
+
+
+def get_active_entrance_records(max_age_minutes: int = 1440) -> list[dict]:
+    """
+    Return recent active entrance records (vehicles currently inside)
+    ordered by most recent first.
+    """
+    conn = _get_connection()
+    rows = conn.execute(
+        """
+        SELECT id, plate_number, camera, timestamp, image_path, confidence,
+               ocr_raw, ocr_corrected, matched_plate, match_score, match_status,
+               rfid_status, expected_rfid_uid, scanned_rfid_uid, trip_status
+        FROM detections
+        WHERE LOWER(camera) = 'entrance'
+          AND (trip_status IS NULL OR trip_status != 'DEPARTED')
+          AND datetime(timestamp) >= datetime('now', '-' || ? || ' minutes')
+        ORDER BY id DESC
+        LIMIT 100
+        """,
+        (max_age_minutes,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def find_matching_entrance_detection(
+    exit_candidate: str | None,
+    max_age_minutes: int = 1440,
+    min_similarity: float = 65.0,
+) -> tuple[dict | None, float]:
+    """
+    Compare an exit plate candidate against active entrance vehicles using OCR confusion tolerance.
+    Returns (matching_entrance_dict, similarity_score) or (None, 0.0).
+    """
+    query = _normalize_plate(exit_candidate)
+    if not query or query == "UNKNOWN":
+        return (None, 0.0)
+
+    try:
+        from ocr_processor import calculate_ocr_similarity
+    except Exception:
+        def calculate_ocr_similarity(a, b):
+            from difflib import SequenceMatcher
+            return SequenceMatcher(None, str(a or ""), str(b or "")).ratio() * 100.0
+
+    active_entries = get_active_entrance_records(max_age_minutes=max_age_minutes)
+    if not active_entries:
+        return (None, 0.0)
+
+    best_match = None
+    best_score = 0.0
+
+    for entry in active_entries:
+        candidates = [
+            entry.get("plate_number"),
+            entry.get("ocr_corrected"),
+            entry.get("ocr_raw"),
+            entry.get("matched_plate"),
+        ]
+        for cand in candidates:
+            cand_norm = _normalize_plate(cand)
+            if not cand_norm or cand_norm == "UNKNOWN":
+                continue
+            if query == cand_norm:
+                return (entry, 100.0)
+
+            score = calculate_ocr_similarity(query, cand_norm)
+            if score > best_score:
+                best_score = score
+                best_match = entry
+
+    if best_score >= min_similarity:
+        return (best_match, round(best_score, 2))
+    return (None, round(best_score, 2))
+
+
+def is_recent_duplicate_exit(
+    plate_number: str | None,
+    entry_detection_id: int | None = None,
+    cooldown_seconds: int = 25,
+) -> bool:
+    """
+    Check if an exit record was already created very recently for this vehicle
+    to prevent duplicate entries from video frame bursts.
+    """
+    norm = _normalize_plate(plate_number)
+    if not norm and not entry_detection_id:
+        return False
+
+    conn = _get_connection()
+    if entry_detection_id:
+        row = conn.execute(
+            """
+            SELECT id FROM detections
+            WHERE LOWER(camera) = 'exit'
+              AND entry_detection_id = ?
+              AND datetime(timestamp) >= datetime('now', '-' || ? || ' seconds')
+            LIMIT 1
+            """,
+            (entry_detection_id, cooldown_seconds),
+        ).fetchone()
+        if row:
+            return True
+
+    if norm:
+        row = conn.execute(
+            """
+            SELECT id FROM detections
+            WHERE LOWER(camera) = 'exit'
+              AND (plate_number = ? OR matched_plate = ?)
+              AND datetime(timestamp) >= datetime('now', '-' || ? || ' seconds')
+            LIMIT 1
+            """,
+            (norm, norm, cooldown_seconds),
+        ).fetchone()
+        return row is not None
+    return False
+
+
+def is_recent_duplicate_entrance(
+    plate_number: str | None,
+    cooldown_seconds: int = 15,
+) -> bool:
+    """Check if an entrance record was already created very recently for this vehicle."""
+    norm = _normalize_plate(plate_number)
+    if not norm:
+        return False
+    conn = _get_connection()
+    row = conn.execute(
+        """
+        SELECT id FROM detections
+        WHERE LOWER(camera) = 'entrance'
+          AND (plate_number = ? OR matched_plate = ?)
+          AND datetime(timestamp) >= datetime('now', '-' || ? || ' seconds')
+        LIMIT 1
+        """,
+        (norm, norm, cooldown_seconds),
+    ).fetchone()
+    return row is not None
+
+
+def mark_entrance_departed(entrance_id: int) -> None:
+    """Mark an entrance detection as departed."""
+    if not entrance_id:
+        return
+    conn = _get_connection()
+    conn.execute(
+        """
+        UPDATE detections
+        SET trip_status = 'DEPARTED'
+        WHERE id = ?
+        """,
+        (entrance_id,),
+    )
+    conn.commit()
 
 
 def register_plate(

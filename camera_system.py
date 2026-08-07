@@ -28,6 +28,10 @@ from database import (
     get_registered_plate_record,
     suggest_plate_from_feedback,
     enqueue_manual_input,
+    find_matching_entrance_detection,
+    is_recent_duplicate_exit,
+    is_recent_duplicate_entrance,
+    mark_entrance_departed,
 )
 from tracker import Tracker
 from sound_system import play_sound, play_gate_success
@@ -524,15 +528,48 @@ class CameraProcessor:
             ocr_corrected = feedback_plate
             plate_valid = True
 
-        registered = get_registered_plates()
-        matched_plate, match_score, match_status = match_plate(ocr_corrected, registered)
+        entry_detection_id = None
+        matched_entrance = None
+        entrance_score = 0.0
 
-        if match_status == "AUTO_MATCHED" and matched_plate:
-            final_plate = matched_plate
-        elif ocr_corrected and ocr_corrected != "UNKNOWN":
-            final_plate = ocr_corrected
+        # Correlate exit detection against active entrance records using OCR tolerance
+        if self.camera_name == "exit":
+            matched_entrance, entrance_score = find_matching_entrance_detection(
+                exit_candidate=ocr_corrected or ocr_raw,
+                max_age_minutes=1440,
+                min_similarity=65.0,
+            )
+
+        if matched_entrance is not None:
+            # Reconcile exit OCR candidate with the exact entered plate
+            final_plate = matched_entrance["plate_number"]
+            matched_plate = matched_entrance["plate_number"]
+            match_score = entrance_score
+            match_status = "EXIT_MATCHED"
+            entry_detection_id = int(matched_entrance["id"])
+            plate_valid = True
+
+            # Prevent duplicate exit rows if the vehicle is in camera view during burst
+            if is_recent_duplicate_exit(final_plate, entry_detection_id=entry_detection_id, cooldown_seconds=25):
+                print(f"[{self.camera_name}] Duplicate exit frame suppressed for {final_plate} (cooldown active).")
+                return
+
+            mark_entrance_departed(entry_detection_id)
         else:
-            final_plate = ocr_raw if ocr_raw else "UNKNOWN"
+            registered = get_registered_plates()
+            matched_plate, match_score, match_status = match_plate(ocr_corrected, registered)
+
+            if match_status == "AUTO_MATCHED" and matched_plate:
+                final_plate = matched_plate
+            elif ocr_corrected and ocr_corrected != "UNKNOWN":
+                final_plate = ocr_corrected
+            else:
+                final_plate = ocr_raw if ocr_raw else "UNKNOWN"
+
+            # Suppress duplicate entrance captures in rapid succession
+            if self.camera_name == "entrance" and is_recent_duplicate_entrance(final_plate, cooldown_seconds=15):
+                print(f"[{self.camera_name}] Duplicate entrance capture suppressed for {final_plate}.")
+                return
 
         safe_plate = "".join(ch for ch in final_plate if ch.isalnum()) or "manual"
 
@@ -580,7 +617,7 @@ class CameraProcessor:
         rfid_status = "NOT_SCANNED" if expected_rfid_uid else "NOT_REQUIRED"
 
         # Audio feedback for plate verification
-        if match_status in ("EXACT_MATCH", "FUZZY_MATCH") or registration is not None:
+        if match_status in ("EXACT_MATCH", "FUZZY_MATCH", "EXIT_MATCHED") or registration is not None or matched_entrance is not None:
             if rfid_status == "NOT_REQUIRED":
                 # Plate alone grants full access for this vehicle
                 play_gate_success(self.camera_name)
@@ -605,6 +642,8 @@ class CameraProcessor:
             match_status=match_status,
             rfid_status=rfid_status,
             expected_rfid_uid=expected_rfid_uid,
+            trip_status="ACTIVE" if self.camera_name == "entrance" else "EXITED",
+            entry_detection_id=entry_detection_id,
         )
         print(
             f"[{self.camera_name}] Detected: {final_plate} "

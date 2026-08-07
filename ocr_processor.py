@@ -137,19 +137,118 @@ def _fallback_extract_one(query: str, choices: list[str]) -> tuple[str, float] |
         if score > best_score:
             best_choice = choice
             best_score = score
-    if best_score < 0:
-        return None
-    return (best_choice, round(best_score, 2))
+# OCR character confusion clusters for similarity scoring
+_OCR_CONFUSION_PAIRS = {
+    frozenset(("O", "0")), frozenset(("O", "Q")), frozenset(("0", "Q")),
+    frozenset(("O", "D")), frozenset(("0", "D")), frozenset(("I", "1")),
+    frozenset(("I", "L")), frozenset(("1", "L")), frozenset(("I", "|")),
+    frozenset(("S", "5")), frozenset(("B", "8")), frozenset(("Z", "2")),
+    frozenset(("G", "6")), frozenset(("C", "G")), frozenset(("D", "0")),
+    frozenset(("T", "7")), frozenset(("A", "4")), frozenset(("U", "V")),
+    frozenset(("E", "F")), frozenset(("K", "X")), frozenset(("M", "N")),
+    frozenset(("P", "R")), frozenset(("H", "N")), frozenset(("Y", "V")),
+}
+
+
+def are_ocr_confusable(c1: str, c2: str) -> bool:
+    """Return True if two characters are visually confusable in typical OCR."""
+    if c1.upper() == c2.upper():
+        return True
+    return frozenset((c1.upper(), c2.upper())) in _OCR_CONFUSION_PAIRS
+
+
+def ocr_levenshtein_distance(s1: str, s2: str) -> float:
+    """Compute weighted Levenshtein distance accounting for common OCR confusions."""
+    norm1 = normalize_plate_text(s1)
+    norm2 = normalize_plate_text(s2)
+    if norm1 == norm2:
+        return 0.0
+    if not norm1:
+        return float(len(norm2))
+    if not norm2:
+        return float(len(norm1))
+
+    m, n = len(norm1), len(norm2)
+    dp = [[0.0] * (n + 1) for _ in range(m + 1)]
+
+    for i in range(m + 1):
+        dp[i][0] = float(i)
+    for j in range(n + 1):
+        dp[0][j] = float(j)
+
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            c1, c2 = norm1[i - 1], norm2[j - 1]
+            if c1 == c2:
+                cost = 0.0
+            elif are_ocr_confusable(c1, c2):
+                cost = 0.25  # Small penalty for common OCR confusion
+            else:
+                cost = 1.0
+
+            dp[i][j] = min(
+                dp[i - 1][j] + 1.0,        # deletion
+                dp[i][j - 1] + 1.0,        # insertion
+                dp[i - 1][j - 1] + cost,    # substitution
+            )
+
+    return dp[m][n]
+
+
+def calculate_ocr_similarity(s1: str | None, s2: str | None) -> float:
+    """
+    Return OCR similarity score (0.0 to 100.0) with tolerance for OCR character misreads.
+    """
+    norm1 = normalize_plate_text(s1)
+    norm2 = normalize_plate_text(s2)
+    if not norm1 or not norm2:
+        return 0.0
+    if norm1 == norm2:
+        return 100.0
+
+    max_len = max(len(norm1), len(norm2))
+    dist = ocr_levenshtein_distance(norm1, norm2)
+    sim = max(0.0, (1.0 - (dist / max_len)) * 100.0)
+    return round(sim, 2)
+
+
+def find_best_fuzzy_match(query: str | None, candidates: list[str], min_score: float = 65.0) -> tuple[str | None, float]:
+    """
+    Find the best matching plate string from candidates using OCR-tolerant similarity.
+    """
+    query_norm = normalize_plate_text(query)
+    if not query_norm or query_norm == "UNKNOWN" or not candidates:
+        return (None, 0.0)
+
+    best_match = None
+    best_score = 0.0
+
+    for cand in candidates:
+        cand_norm = normalize_plate_text(cand)
+        if not cand_norm:
+            continue
+        # Exact match check
+        if query_norm == cand_norm:
+            return (cand, 100.0)
+
+        score = calculate_ocr_similarity(query_norm, cand_norm)
+        if score > best_score:
+            best_score = score
+            best_match = cand
+
+    if best_score >= min_score:
+        return (best_match, round(best_score, 2))
+    return (None, round(best_score, 2))
 
 
 def match_plate(
     ocr_result: str | None,
     registered_plates: list[str],
-    threshold: float = 85.0,
+    threshold: float = 80.0,
     review_threshold: float = 60.0,
 ) -> tuple[str | None, float, str]:
     """
-    Match OCR result against registered plates using Levenshtein similarity.
+    Match OCR result against registered plates using OCR-tolerant similarity.
 
     Returns
     -------
@@ -166,27 +265,16 @@ def match_plate(
     if not query or query == "UNKNOWN":
         return (None, 0.0, "NO_MATCH")
 
-    best_match: str | None = None
-    score = 0.0
-
-    if process is not None and fuzz is not None:
-        result = process.extractOne(query, cleaned_choices, scorer=fuzz.ratio)
-        if result is not None:
-            best_match, score, _ = result
-            score = float(score)
-    else:
-        fallback = _fallback_extract_one(query, cleaned_choices)
-        if fallback is not None:
-            best_match, score = fallback
+    best_match, score = find_best_fuzzy_match(query, cleaned_choices, min_score=0.0)
 
     if best_match is None:
         return (None, 0.0, "NO_MATCH")
 
     if score >= threshold:
-        return (best_match, round(score, 2), "AUTO_MATCHED")
+        return (best_match, score, "AUTO_MATCHED")
     if score >= review_threshold:
-        return (best_match, round(score, 2), "NEEDS_REVIEW")
-    return (None, round(score, 2), "NO_MATCH")
+        return (best_match, score, "NEEDS_REVIEW")
+    return (None, score, "NO_MATCH")
 
 
 # ---------------------------------------------------------------------------
