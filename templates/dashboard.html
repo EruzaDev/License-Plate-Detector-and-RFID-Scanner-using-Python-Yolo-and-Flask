@@ -1478,6 +1478,26 @@
         }
     }
 
+    // ---- Browser Web Audio Notifications ----
+    let lastSoundEpoch = 0;
+    async function checkSoundNotifications() {
+        try {
+            const res = await fetch('/api/sound/last_event');
+            const data = await res.json();
+            if (data && data.epoch && data.epoch > lastSoundEpoch && data.file) {
+                if (lastSoundEpoch > 0) {
+                    try {
+                        const audio = new Audio('/sound/' + data.file);
+                        audio.play().catch(() => {
+                            // Autoplay policies might block until first user interaction
+                        });
+                    } catch (_err) {}
+                }
+                lastSoundEpoch = data.epoch;
+            }
+        } catch (_e) {}
+    }
+
     // ---- Initial load + auto-refresh ----
     loadDevices();
     loadRfidDevices();
@@ -1485,12 +1505,14 @@
     loadDetections();
     loadPendingManualInputs();
     loadRfidLastScan();
+    checkSoundNotifications();
     setInterval(() => {
         loadStats();
         loadDetections(dateInput.value || null);
         loadPendingManualInputs();
         loadRfidLastScan();
-    }, 4000);
+        checkSoundNotifications();
+    }, 2000);
 </script>
 
 </body>

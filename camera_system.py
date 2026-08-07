@@ -30,6 +30,7 @@ from database import (
     enqueue_manual_input,
 )
 from tracker import Tracker
+from sound_system import play_sound, play_gate_success
 
 try:
     from plate_debug_saver import save_debug_plate_image
@@ -556,6 +557,7 @@ class CameraProcessor:
         rel_path = f"captures/{filename}"
 
         if final_plate == "UNKNOWN":
+            play_sound("denied", gate=self.camera_name)
             manual_id = enqueue_manual_input(
                 camera=self.camera_name,
                 timestamp=ts_db,
@@ -576,6 +578,18 @@ class CameraProcessor:
         if registration:
             expected_rfid_uid = registration.get("rfid_uid")
         rfid_status = "NOT_SCANNED" if expected_rfid_uid else "NOT_REQUIRED"
+
+        # Audio feedback for plate verification
+        if match_status in ("EXACT_MATCH", "FUZZY_MATCH") or registration is not None:
+            if rfid_status == "NOT_REQUIRED":
+                # Plate alone grants full access for this vehicle
+                play_gate_success(self.camera_name)
+            else:
+                # Plate found in system, waiting for RFID tag scan
+                play_sound("successful", gate=self.camera_name)
+        else:
+            # Plate not found in registered system
+            play_sound("denied", gate=self.camera_name)
 
         insert_detection(
             plate_number=final_plate,

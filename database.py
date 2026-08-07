@@ -442,6 +442,25 @@ def verify_detection_rfid(detection_id: int, scanned_uid: str) -> dict | None:
     }
 
 
+def is_rfid_registered(scanned_uid: str) -> bool:
+    """Check if an RFID UID is registered with any vehicle or user in the database."""
+    normalized_uid = _normalize_rfid_uid(scanned_uid)
+    if not normalized_uid:
+        return False
+    conn = _get_connection()
+    row = conn.execute(
+        """
+        SELECT 1 FROM registered_plates WHERE UPPER(REPLACE(REPLACE(rfid_uid, ' ', ''), '-', '')) = ?
+        UNION
+        SELECT 1 FROM users WHERE UPPER(REPLACE(REPLACE(rfid_uid, ' ', ''), '-', '')) = ?
+        LIMIT 1
+        """,
+        (normalized_uid, normalized_uid),
+    ).fetchone()
+    return row is not None
+
+
+
 def enqueue_manual_input(
     camera: str,
     timestamp: str,

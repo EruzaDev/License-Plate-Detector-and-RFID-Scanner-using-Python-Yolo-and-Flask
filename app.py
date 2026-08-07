@@ -74,6 +74,7 @@ from rfid_system import (
     start_rfid_from_config,
     trigger_manual_rfid_scan,
 )
+from sound_system import play_sound, play_gate_success, get_last_sound_event
 from sync_worker import CloudSyncWorker
 
 # ---------------------------------------------------------------------------
@@ -301,7 +302,7 @@ def inject_auth_user():
 
 @app.before_request
 def require_login_for_dashboard():
-    open_endpoints = {"login", "logout", "serve_capture"}
+    open_endpoints = {"login", "logout", "serve_capture", "serve_sound_file"}
     if request.endpoint in open_endpoints:
         return None
 
@@ -1255,12 +1256,54 @@ def api_verify_rfid():
     try:
         result = verify_detection_rfid(detection_id=detection_id, scanned_uid=scanned_uid)
     except ValueError as exc:
+        play_sound("denied")
         return jsonify({"error": str(exc)}), 400
 
     if result is None:
+        play_sound("denied")
         return jsonify({"error": "Detection not found."}), 404
 
+    decision = result.get("decision")
+    if decision == "ACCESS_GRANTED":
+        # Check camera from detection
+        conn = sqlite3.connect("lpr_system.db")
+        conn.row_factory = sqlite3.Row
+        d_row = conn.execute("SELECT camera FROM detections WHERE id = ?", (detection_id,)).fetchone()
+        conn.close()
+        gate = d_row["camera"] if d_row else "entrance"
+        play_gate_success(gate)
+    else:
+        play_sound("denied")
+
     return jsonify({"ok": True, **result})
+
+
+@app.route("/sound/<path:filename>")
+def serve_sound_file(filename):
+    """Serve static MP3 sound files for web audio."""
+    sound_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "res", "sound")
+    return send_from_directory(sound_dir, filename, mimetype="audio/mpeg")
+
+
+@app.route("/api/sound/last_event", methods=["GET"])
+def api_last_sound_event():
+    """Return the most recent sound notification event for browser audio playback."""
+    return jsonify(get_last_sound_event())
+
+
+@app.route("/api/sound/play", methods=["POST"])
+def api_play_sound():
+    """Manually trigger a sound notification."""
+    data = request.get_json(silent=True) or {}
+    name = str(data.get("sound", "")).strip().lower()
+    gate = str(data.get("gate", "")).strip().lower() or None
+    if not name:
+        return jsonify({"error": "sound parameter required."}), 400
+    if name == "gate_success":
+        play_gate_success(gate or "entrance")
+    else:
+        play_sound(name, gate=gate)
+    return jsonify({"ok": True, "sound": name, "gate": gate})
 
 
 @app.route("/api/manual_inputs/pending", methods=["GET"])
@@ -1296,6 +1339,7 @@ def api_resolve_manual_input(item_id: int):
 
     # Store accepted manual entries in the fuzzy-match registry for future runs.
     register_plate(result["plate_number"], owner_name=None)
+    play_sound("successful")
     return jsonify({"ok": True, **result})
 
 

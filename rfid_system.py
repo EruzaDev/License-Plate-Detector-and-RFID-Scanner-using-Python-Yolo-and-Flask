@@ -21,7 +21,9 @@ from typing import Any, Callable
 from database import (
     verify_detection_rfid,
     get_pending_rfid_verifications,
+    is_rfid_registered,
 )
+from sound_system import play_sound, play_gate_success
 
 # ---------------------------------------------------------------------------
 # Linux Input Event Definitions (linux/input.h & linux/input-event-codes.h)
@@ -361,6 +363,12 @@ def _default_on_scan(camera_name: str, scanned_uid: str) -> None:
 
     if target is None:
         print(f"[rfid-{clean_gate}] Scanned UID {scanned_uid}, but no pending detections found for gate '{clean_gate}'.")
+        # Check if the tag itself is registered in the system
+        if is_rfid_registered(scanned_uid):
+            play_sound("successful", gate=clean_gate)
+        else:
+            play_sound("denied", gate=clean_gate)
+
         reader = _readers.get(clean_gate)
         if reader:
             with reader._lock:
@@ -375,6 +383,7 @@ def _default_on_scan(camera_name: str, scanned_uid: str) -> None:
         )
     except Exception as exc:
         print(f"[rfid-{clean_gate}] Error verifying detection #{detection_id}: {exc}")
+        play_sound("denied", gate=clean_gate)
         reader = _readers.get(clean_gate)
         if reader:
             with reader._lock:
@@ -383,12 +392,20 @@ def _default_on_scan(camera_name: str, scanned_uid: str) -> None:
 
     if result is None:
         print(f"[rfid-{clean_gate}] Detection #{detection_id} not found.")
+        play_sound("denied", gate=clean_gate)
         return
 
     decision = result.get("decision", "UNKNOWN")
     plate = result.get("plate_number", "?")
     status = result.get("rfid_status", "?")
     print(f"[rfid-{clean_gate}] Auto-verified #{detection_id} [{plate}] at {clean_gate} gate: {status} ({decision})")
+
+    if decision == "ACCESS_GRANTED":
+        # Both plate and RFID are verified for this gate
+        play_gate_success(clean_gate)
+    else:
+        # RFID does not match expected UID
+        play_sound("denied", gate=clean_gate)
 
     reader = _readers.get(clean_gate)
     if reader:
