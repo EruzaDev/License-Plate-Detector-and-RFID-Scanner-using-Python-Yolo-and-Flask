@@ -285,6 +285,90 @@
             {% endif %}
         </section>
 
+        <!-- ====== Relay & Traffic Light Control (4 Lights: 2 Red NC, 2 Green NO) ====== -->
+        <section class="card">
+            <h2 style="margin-bottom:.35rem;"><span class="section-icon">&#128161;</span>Relay & Traffic Light Hardware Status</h2>
+            <p class="muted">
+                Controls 4 lights across 2 gates using 2 Raspberry Pi GPIO pins.
+                In normal/idle state, the relay is unenergized and current flows to the <strong>Red Lamp (Naturally Closed / NC)</strong>.
+                When access is granted, the relay energizes to switch to the <strong>Green Lamp (Normally Open / NO)</strong> for 5 seconds.
+            </p>
+
+            <div class="grid-2">
+                <!-- Entrance Gate Light Card -->
+                <div style="background: #0b1220; border: 1px solid #334155; border-radius: 10px; padding: .9rem;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: .6rem;">
+                        <strong>Entrance Gate (Entry)</strong>
+                        <span id="relay-driver-tag" class="rfid-badge" style="background: rgba(59,130,246,.2); color: #60a5fa;">Hardware</span>
+                    </div>
+
+                    <div style="display: flex; gap: 1rem; align-items: center; margin-bottom: .8rem;">
+                        <!-- Mini Traffic Light visualization -->
+                        <div style="background: #1e293b; padding: .4rem .6rem; border-radius: 20px; display: inline-flex; flex-direction: column; gap: .4rem; border: 2px solid #475569;">
+                            <div id="light-ent-red" style="width: 24px; height: 24px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 12px #ef4444;" title="Entrance Red Light (NC - Normal)"></div>
+                            <div id="light-ent-green" style="width: 24px; height: 24px; border-radius: 50%; background: #1e293b; opacity: 0.3;" title="Entrance Green Light (NO - Success)"></div>
+                        </div>
+
+                        <div style="font-size: .84rem; line-height: 1.4;">
+                            <div>Active Light: <strong id="relay-light-entrance" style="color: #ef4444;">RED (STOP / IDLE)</strong></div>
+                            <div class="status-line">Raspberry Pi Pin: <strong>GPIO 17</strong> (Physical <strong>Pin 11</strong>)</div>
+                            <div class="status-line" style="font-size: .78rem; color: #94a3b8;">Red: NC terminal &middot; Green: NO terminal</div>
+                        </div>
+                    </div>
+
+                    <div style="display: flex; gap: .5rem; align-items: center;">
+                        <button type="button" onclick="triggerRelay('entrance')" style="background: #16a34a; font-size: .82rem; padding: .4rem .7rem;">
+                            &#9654; Test Green Light (5s)
+                        </button>
+                        <span id="relay-status-entrance" class="assign-status" style="font-size: .8rem;"></span>
+                    </div>
+                </div>
+
+                <!-- Exit Gate Light Card -->
+                <div style="background: #0b1220; border: 1px solid #334155; border-radius: 10px; padding: .9rem;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: .6rem;">
+                        <strong>Exit Gate (Departure)</strong>
+                        <span class="rfid-badge" style="background: rgba(59,130,246,.2); color: #60a5fa;">Hardware</span>
+                    </div>
+
+                    <div style="display: flex; gap: 1rem; align-items: center; margin-bottom: .8rem;">
+                        <!-- Mini Traffic Light visualization -->
+                        <div style="background: #1e293b; padding: .4rem .6rem; border-radius: 20px; display: inline-flex; flex-direction: column; gap: .4rem; border: 2px solid #475569;">
+                            <div id="light-exit-red" style="width: 24px; height: 24px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 12px #ef4444;" title="Exit Red Light (NC - Normal)"></div>
+                            <div id="light-exit-green" style="width: 24px; height: 24px; border-radius: 50%; background: #1e293b; opacity: 0.3;" title="Exit Green Light (NO - Success)"></div>
+                        </div>
+
+                        <div style="font-size: .84rem; line-height: 1.4;">
+                            <div>Active Light: <strong id="relay-light-exit" style="color: #ef4444;">RED (STOP / IDLE)</strong></div>
+                            <div class="status-line">Raspberry Pi Pin: <strong>GPIO 27</strong> (Physical <strong>Pin 13</strong>)</div>
+                            <div class="status-line" style="font-size: .78rem; color: #94a3b8;">Red: NC terminal &middot; Green: NO terminal</div>
+                        </div>
+                    </div>
+
+                    <div style="display: flex; gap: .5rem; align-items: center;">
+                        <button type="button" onclick="triggerRelay('exit')" style="background: #16a34a; font-size: .82rem; padding: .4rem .7rem;">
+                            &#9654; Test Green Light (5s)
+                        </button>
+                        <span id="relay-status-exit" class="assign-status" style="font-size: .8rem;"></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Hardware Pinout Quick Reference -->
+            <div style="margin-top: .9rem; padding: .75rem; background: rgba(15,23,42,.6); border-radius: 8px; border: 1px solid #1e293b; font-size: .82rem; color: #cbd5e1;">
+                <strong>Raspberry Pi 40-Pin Header Wiring Guide:</strong>
+                <ul style="margin: .3rem 0 0 1.2rem; padding: 0; line-height: 1.5;">
+                    <li><strong>Entrance Relay IN1:</strong> Raspberry Pi <strong>GPIO 17</strong> &rarr; <strong>Physical Pin 11</strong></li>
+                    <li><strong>Exit Relay IN2:</strong> Raspberry Pi <strong>GPIO 27</strong> &rarr; <strong>Physical Pin 13</strong></li>
+                    <li><strong>Relay VCC:</strong> Raspberry Pi <strong>5V Power</strong> &rarr; <strong>Physical Pin 2</strong> or <strong>Pin 4</strong></li>
+                    <li><strong>Relay GND:</strong> Raspberry Pi <strong>Ground</strong> &rarr; <strong>Physical Pin 6</strong>, <strong>Pin 9</strong>, or <strong>Pin 14</strong></li>
+                    <li><strong>Light Common (COM):</strong> Power Source (+) connected to COM on both relay channels</li>
+                    <li><strong>Red Lights:</strong> Connected to <strong>NC (Normally Closed)</strong> &rarr; ON naturally at idle</li>
+                    <li><strong>Green Lights:</strong> Connected to <strong>NO (Normally Open)</strong> &rarr; ON when access granted</li>
+                </ul>
+            </div>
+        </section>
+
         <!-- ====== Live Preview ====== -->
         <section class="card">
             <h2 style="margin-bottom:.45rem;">Live Preview</h2>
@@ -320,8 +404,90 @@
                 }
             }
 
-            entrySelect.addEventListener('change', autoPickExit);
+            if (entrySelect) {
+                entrySelect.addEventListener('change', autoPickExit);
+            }
         })();
+
+        // Live Relay & Traffic Light Polling
+        async function fetchRelayStatus() {
+            try {
+                const res = await fetch('/api/relay/status');
+                if (!res.ok) return;
+                const data = await res.json();
+
+                const driverTag = document.getElementById('relay-driver-tag');
+                if (driverTag && data.driver) {
+                    driverTag.textContent = data.driver;
+                }
+
+                ['entrance', 'exit'].forEach(gate => {
+                    const info = data[gate];
+                    if (!info) return;
+
+                    const redEl = document.getElementById('light-' + (gate === 'entrance' ? 'ent' : 'exit') + '-red');
+                    const greenEl = document.getElementById('light-' + (gate === 'entrance' ? 'ent' : 'exit') + '-green');
+                    const labelEl = document.getElementById('relay-light-' + gate);
+
+                    if (info.light === 'GREEN') {
+                        if (redEl) { redEl.style.background = '#1e293b'; redEl.style.boxShadow = 'none'; redEl.style.opacity = '0.3'; }
+                        if (greenEl) { greenEl.style.background = '#22c55e'; greenEl.style.boxShadow = '0 0 14px #22c55e'; greenEl.style.opacity = '1'; }
+                        if (labelEl) {
+                            labelEl.textContent = 'GREEN (ACCESS OPEN ' + (info.remaining_seconds > 0 ? info.remaining_seconds + 's' : '') + ')';
+                            labelEl.style.color = '#22c55e';
+                        }
+                    } else {
+                        if (redEl) { redEl.style.background = '#ef4444'; redEl.style.boxShadow = '0 0 12px #ef4444'; redEl.style.opacity = '1'; }
+                        if (greenEl) { greenEl.style.background = '#1e293b'; greenEl.style.boxShadow = 'none'; greenEl.style.opacity = '0.3'; }
+                        if (labelEl) {
+                            labelEl.textContent = 'RED (STOP / IDLE)';
+                            labelEl.style.color = '#ef4444';
+                        }
+                    }
+                });
+            } catch (e) {
+                // silent
+            }
+        }
+
+        async function triggerRelay(gate) {
+            const statusEl = document.getElementById('relay-status-' + gate);
+            if (statusEl) {
+                statusEl.textContent = 'Triggering…';
+                statusEl.className = 'assign-status';
+            }
+
+            try {
+                const res = await fetch('/api/relay/trigger', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({gate: gate, duration: 5.0}),
+                });
+                const data = await res.json();
+                if (data.ok) {
+                    if (statusEl) {
+                        statusEl.textContent = '✓ Green Light Active (5s)';
+                        statusEl.className = 'assign-status assign-ok';
+                    }
+                    fetchRelayStatus();
+                } else {
+                    if (statusEl) {
+                        statusEl.textContent = '✗ ' + (data.error || 'Failed');
+                        statusEl.className = 'assign-status assign-fail';
+                    }
+                }
+            } catch (e) {
+                if (statusEl) {
+                    statusEl.textContent = '✗ Network error';
+                    statusEl.className = 'assign-status assign-fail';
+                }
+            }
+            setTimeout(() => { if (statusEl) statusEl.textContent = ''; }, 4000);
+        }
+
+        fetchRelayStatus();
+        setInterval(fetchRelayStatus, 1000);
     </script>
 </body>
 </html>
+

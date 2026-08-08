@@ -103,6 +103,7 @@ def play_gate_success(gate: str) -> None:
     Helper when both plate and RFID are complete for a gate:
     1. Play 'successful.mp3' immediately.
     2. Play 'welcome.mp3' for Entrance OR 'goodbye.mp3' for Exit.
+    3. Trigger Green light relay (switches from Red NC to Green NO).
     """
     clean_gate = str(gate or "").strip().lower()
     play_sound("successful", gate=clean_gate, delay_seconds=0.0)
@@ -111,8 +112,16 @@ def play_gate_success(gate: str) -> None:
     elif clean_gate == "exit":
         play_sound("goodbye", gate=clean_gate, delay_seconds=1.1)
 
+    # Trigger relay hardware to switch to Green light
+    try:
+        from relay_system import trigger_gate_relay
+        trigger_gate_relay(clean_gate)
+    except Exception as exc:
+        print(f"[relay] Trigger error: {exc}")
+
 
 def get_last_sound_event() -> dict[str, Any]:
     """Return the most recent sound event for dashboard polling / web audio."""
     with _sound_lock:
         return dict(_last_sound_event)
+

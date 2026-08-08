@@ -745,6 +745,43 @@
         </div>
     </div>
 
+    <!-- ====== Relay Traffic Light Hardware Status (4 Lights: 2 Red NC, 2 Green NO) ====== -->
+    <div class="rfid-status-row" style="margin-top: 1rem;">
+        <div class="rfid-status-card" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: .6rem;">
+            <div style="display: flex; gap: .9rem; align-items: center;">
+                <div style="background: #1e293b; padding: .35rem .55rem; border-radius: 18px; display: inline-flex; flex-direction: column; gap: .35rem; border: 2px solid #475569;">
+                    <div id="dash-light-ent-red" style="width: 20px; height: 20px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 10px #ef4444;" title="Entrance Red Light (NC - Normal)"></div>
+                    <div id="dash-light-ent-green" style="width: 20px; height: 20px; border-radius: 50%; background: #1e293b; opacity: 0.3;" title="Entrance Green Light (NO - Success)"></div>
+                </div>
+                <div>
+                    <div class="rfid-label">&#128161; Entrance Light &middot; GPIO 17 (Pin 11)</div>
+                    <div class="rfid-uid" id="dash-relay-ent-label" style="font-size: 1.05rem; color: #ef4444;">RED (STOP)</div>
+                    <div class="rfid-detail" id="dash-relay-ent-detail">Normal state: Red lamp ON (NC)</div>
+                </div>
+            </div>
+            <button onclick="triggerRelayDash('entrance')" style="background: #16a34a; color: #fff; border: none; border-radius: 8px; padding: .45rem .75rem; font-size: .8rem; font-weight: 600; cursor: pointer;">
+                &#9654; Open Green (5s)
+            </button>
+        </div>
+        <div class="rfid-status-card" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: .6rem;">
+            <div style="display: flex; gap: .9rem; align-items: center;">
+                <div style="background: #1e293b; padding: .35rem .55rem; border-radius: 18px; display: inline-flex; flex-direction: column; gap: .35rem; border: 2px solid #475569;">
+                    <div id="dash-light-exit-red" style="width: 20px; height: 20px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 10px #ef4444;" title="Exit Red Light (NC - Normal)"></div>
+                    <div id="dash-light-exit-green" style="width: 20px; height: 20px; border-radius: 50%; background: #1e293b; opacity: 0.3;" title="Exit Green Light (NO - Success)"></div>
+                </div>
+                <div>
+                    <div class="rfid-label">&#128161; Exit Light &middot; GPIO 27 (Pin 13)</div>
+                    <div class="rfid-uid" id="dash-relay-exit-label" style="font-size: 1.05rem; color: #ef4444;">RED (STOP)</div>
+                    <div class="rfid-detail" id="dash-relay-exit-detail">Normal state: Red lamp ON (NC)</div>
+                </div>
+            </div>
+            <button onclick="triggerRelayDash('exit')" style="background: #16a34a; color: #fff; border: none; border-radius: 8px; padding: .45rem .75rem; font-size: .8rem; font-weight: 600; cursor: pointer;">
+                &#9654; Open Green (5s)
+            </button>
+        </div>
+    </div>
+
+
     <!-- ====== Live Camera Feeds ====== -->
     <div class="cameras">
         <div class="cam-box">
@@ -1498,6 +1535,62 @@
         } catch (_e) {}
     }
 
+    // ---- Live Relay & Traffic Light Polling ----
+    async function fetchRelayStatusDash() {
+        try {
+            const res = await fetch('/api/relay/status');
+            if (!res.ok) return;
+            const data = await res.json();
+
+            ['entrance', 'exit'].forEach(gate => {
+                const info = data[gate];
+                if (!info) return;
+
+                const redEl = document.getElementById('dash-light-' + (gate === 'entrance' ? 'ent' : 'exit') + '-red');
+                const greenEl = document.getElementById('dash-light-' + (gate === 'entrance' ? 'ent' : 'exit') + '-green');
+                const labelEl = document.getElementById('dash-relay-' + (gate === 'entrance' ? 'ent' : 'exit') + '-label');
+                const detailEl = document.getElementById('dash-relay-' + (gate === 'entrance' ? 'ent' : 'exit') + '-detail');
+
+                if (info.light === 'GREEN') {
+                    if (redEl) { redEl.style.background = '#1e293b'; redEl.style.boxShadow = 'none'; redEl.style.opacity = '0.3'; }
+                    if (greenEl) { greenEl.style.background = '#22c55e'; greenEl.style.boxShadow = '0 0 14px #22c55e'; greenEl.style.opacity = '1'; }
+                    if (labelEl) {
+                        labelEl.textContent = 'GREEN (OPEN ' + (info.remaining_seconds > 0 ? info.remaining_seconds + 's' : '') + ')';
+                        labelEl.style.color = '#22c55e';
+                    }
+                    if (detailEl) {
+                        detailEl.textContent = 'Relay Energized (NO) — Access Granted';
+                    }
+                } else {
+                    if (redEl) { redEl.style.background = '#ef4444'; redEl.style.boxShadow = '0 0 10px #ef4444'; redEl.style.opacity = '1'; }
+                    if (greenEl) { greenEl.style.background = '#1e293b'; greenEl.style.boxShadow = 'none'; greenEl.style.opacity = '0.3'; }
+                    if (labelEl) {
+                        labelEl.textContent = 'RED (STOP)';
+                        labelEl.style.color = '#ef4444';
+                    }
+                    if (detailEl) {
+                        detailEl.textContent = 'Normal state: Red lamp ON (NC terminal)';
+                    }
+                }
+            });
+        } catch (e) {
+            // silent
+        }
+    }
+
+    async function triggerRelayDash(gate) {
+        try {
+            await fetch('/api/relay/trigger', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({gate: gate, duration: 5.0}),
+            });
+            fetchRelayStatusDash();
+        } catch (e) {
+            console.error('Trigger relay error:', e);
+        }
+    }
+
     // ---- Initial load + auto-refresh ----
     loadDevices();
     loadRfidDevices();
@@ -1506,13 +1599,15 @@
     loadPendingManualInputs();
     loadRfidLastScan();
     checkSoundNotifications();
+    fetchRelayStatusDash();
     setInterval(() => {
         loadStats();
         loadDetections(dateInput.value || null);
         loadPendingManualInputs();
         loadRfidLastScan();
         checkSoundNotifications();
-    }, 2000);
+        fetchRelayStatusDash();
+    }, 1500);
 </script>
 
 </body>

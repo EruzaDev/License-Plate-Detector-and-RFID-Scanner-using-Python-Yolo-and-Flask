@@ -75,7 +75,18 @@ from rfid_system import (
     trigger_manual_rfid_scan,
 )
 from sound_system import play_sound, play_gate_success, get_last_sound_event
+from relay_system import (
+    init_relays,
+    trigger_gate_relay,
+    get_relay_status,
+    set_relay_state,
+    cleanup_relays,
+)
 from sync_worker import CloudSyncWorker
+
+import atexit
+atexit.register(cleanup_relays)
+
 
 # ---------------------------------------------------------------------------
 # Flask app setup
@@ -1372,6 +1383,60 @@ def api_discard_manual_input(item_id: int):
 
 
 # ---------------------------------------------------------------------------
+# Relay & Traffic Light API endpoints
+# ---------------------------------------------------------------------------
+@app.route("/api/relay/status", methods=["GET"])
+def api_relay_status():
+    """Return live status of both gate relays, active light colors, and pin mapping."""
+    return jsonify(get_relay_status())
+
+
+@app.route("/api/relay/trigger", methods=["POST"])
+def api_relay_trigger():
+    """
+    Manually or programmatically trigger the green light for entrance or exit gate.
+    JSON body: {"gate": "entrance"|"exit", "duration": float|optional}
+    """
+    data = request.get_json(silent=True) or {}
+    gate = str(data.get("gate", "entrance")).strip().lower()
+    duration = data.get("duration")
+    if duration is not None:
+        try:
+            duration = float(duration)
+        except (ValueError, TypeError):
+            duration = None
+
+    if gate not in ("entrance", "exit"):
+        return jsonify({"error": "gate must be 'entrance' or 'exit'."}), 400
+
+    try:
+        res = trigger_gate_relay(gate=gate, duration=duration)
+        return jsonify(res)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/relay/set", methods=["POST"])
+def api_relay_set():
+    """
+    Manually lock/override relay state.
+    JSON body: {"gate": "entrance"|"exit", "active": true|false}
+    """
+    data = request.get_json(silent=True) or {}
+    gate = str(data.get("gate", "entrance")).strip().lower()
+    active = bool(data.get("active", False))
+
+    if gate not in ("entrance", "exit"):
+        return jsonify({"error": "gate must be 'entrance' or 'exit'."}), 400
+
+    try:
+        res = set_relay_state(gate=gate, active=active)
+        return jsonify(res)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
@@ -1382,6 +1447,9 @@ if __name__ == "__main__":
     _ensure_auth_schema()
     print("[auth] Login required on dashboard routes")
     print("[auth] Default admin: admin@campus.local / admin123")
+
+    # Initialize Relay & Light Hardware
+    init_relays()
 
     # Load YOLO model; cameras are assigned from the dashboard
     start_cameras()
@@ -1409,3 +1477,4 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
     print(f"[web] Dashboard -> http://0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port, threaded=True, debug=False)
+
