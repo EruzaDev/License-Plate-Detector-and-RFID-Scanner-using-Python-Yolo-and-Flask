@@ -18,5 +18,3 @@ fastapi
 uvicorn
 evdev
 gpiozero
-rpi-lgpio; platform_machine=="armv7l" or platform_machine=="aarch64"
-RPi.GPIO; (platform_machine=="armv7l" or platform_machine=="aarch64") and python_version<"3.12"

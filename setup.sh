@@ -28,7 +28,7 @@ echo -e "\n${YELLOW}[1/6] Checking system packages and hardware permissions...${
 if command -v apt-get >/dev/null 2>&1; then
     echo "Detected Debian/Ubuntu-based distribution."
     sudo apt-get update -qq || true
-    sudo apt-get install -y -qq python3 python3-venv python3-pip ffmpeg libgl1-mesa-glx v4l-utils alsa-utils libglib2.0-0 python3-lgpio python3-rpi.gpio python3-gpiozero python3-libgpiod >/dev/null 2>&1 || {
+    sudo apt-get install -y -qq python3 python3-venv python3-pip ffmpeg libgl1-mesa-glx v4l-utils alsa-utils libglib2.0-0 python3-lgpio python3-rpi-lgpio python3-rpi.gpio python3-gpiozero python3-libgpiod swig liblgpio-dev >/dev/null 2>&1 || {
         echo "Installing core system packages..."
         sudo apt-get install -y python3 python3-venv python3-pip ffmpeg v4l-utils alsa-utils
     }
