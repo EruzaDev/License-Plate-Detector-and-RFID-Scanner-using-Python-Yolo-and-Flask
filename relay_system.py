@@ -109,12 +109,61 @@ class _BaseRelayDriver:
         pass
 
 
+class _LgpioDriver(_BaseRelayDriver):
+    name = "lgpio"
+
+    def __init__(self):
+        import lgpio  # type: ignore
+        self._lgpio = lgpio
+        self._handle = None
+        self._claimed_pins: set[int] = set()
+
+        # Probe available gpiochips: Pi 5 uses chip 4 (RP1), Pi 4/3 uses chip 0
+        for chip in (4, 0, 1, 2, 3):
+            try:
+                h = self._lgpio.gpiochip_open(chip)
+                if h is not None and h >= 0:
+                    self._handle = h
+                    break
+            except Exception:
+                continue
+
+        if self._handle is None:
+            raise RuntimeError("No accessible lgpio chip found")
+
+    def setup_pin(self, pin: int) -> None:
+        if self._handle is None:
+            raise RuntimeError("lgpio handle is not open")
+        if pin not in self._claimed_pins:
+            self._lgpio.gpio_claim_output(self._handle, pin, LEVEL_INACTIVE)
+            self._claimed_pins.add(pin)
+
+    def write_pin(self, pin: int, level: int) -> None:
+        if self._handle is not None and pin in self._claimed_pins:
+            self._lgpio.gpio_write(self._handle, pin, level)
+
+    def cleanup(self) -> None:
+        if self._handle is not None:
+            for pin in list(self._claimed_pins):
+                try:
+                    self._lgpio.gpio_write(self._handle, pin, LEVEL_INACTIVE)
+                    self._lgpio.gpio_free(self._handle, pin)
+                except Exception:
+                    pass
+            self._claimed_pins.clear()
+            try:
+                self._lgpio.gpiochip_close(self._handle)
+            except Exception:
+                pass
+            self._handle = None
+
+
 class _GpiozeroDriver(_BaseRelayDriver):
     name = "gpiozero"
 
     def __init__(self):
-        from gpiozero import OutputDevice  # type: ignore
-        self._OutputDevice = OutputDevice
+        import gpiozero  # type: ignore
+        self._OutputDevice = gpiozero.OutputDevice
         self._devices: dict[int, Any] = {}
 
     def setup_pin(self, pin: int) -> None:
@@ -135,7 +184,7 @@ class _GpiozeroDriver(_BaseRelayDriver):
                 dev.off()
 
     def cleanup(self) -> None:
-        for dev in self._devices.values():
+        for dev in list(self._devices.values()):
             try:
                 dev.off()
                 dev.close()
@@ -165,7 +214,7 @@ class _RPiGPIODriver(_BaseRelayDriver):
 
     def cleanup(self) -> None:
         try:
-            for pin in self._pins:
+            for pin in list(self._pins):
                 self.write_pin(pin, LEVEL_INACTIVE)
             self._GPIO.cleanup()
         except Exception:
@@ -181,23 +230,22 @@ class _GpiodDriver(_BaseRelayDriver):
         self._gpiod = gpiod
         self._chip = None
         self._lines: dict[int, Any] = {}
-        # Try opening default gpiochip
-        for chip_name in ("gpiochip4", "gpiochip0", "0"):
+        # Try opening default gpiochips: Pi 5 is chip 4, Pi 4/3 is chip 0
+        for chip_name in ("gpiochip4", "/dev/gpiochip4", "gpiochip0", "/dev/gpiochip0", "4", "0"):
             try:
                 self._chip = gpiod.Chip(chip_name)
                 break
             except Exception:
                 continue
+        if self._chip is None:
+            raise RuntimeError("No accessible gpiod chip found")
 
     def setup_pin(self, pin: int) -> None:
         if self._chip is None or pin in self._lines:
             return
-        try:
-            line = self._chip.get_line(pin)
-            line.request(consumer="lpr_relay", type=self._gpiod.LINE_REQ_DIR_OUT, default_val=LEVEL_INACTIVE)
-            self._lines[pin] = line
-        except Exception as exc:
-            print(f"[relay] gpiod setup error for pin {pin}: {exc}")
+        line = self._chip.get_line(pin)
+        line.request(consumer="lpr_relay", type=self._gpiod.LINE_REQ_DIR_OUT, default_val=LEVEL_INACTIVE)
+        self._lines[pin] = line
 
     def write_pin(self, pin: int, level: int) -> None:
         line = self._lines.get(pin)
@@ -208,7 +256,7 @@ class _GpiodDriver(_BaseRelayDriver):
                 print(f"[relay] gpiod write error for pin {pin}: {exc}")
 
     def cleanup(self) -> None:
-        for line in self._lines.values():
+        for line in list(self._lines.values()):
             try:
                 line.set_value(LEVEL_INACTIVE)
                 line.release()
@@ -220,12 +268,15 @@ class _GpiodDriver(_BaseRelayDriver):
                 self._chip.close()
             except Exception:
                 pass
+            self._chip = None
 
 
 class _SysfsDriver(_BaseRelayDriver):
     name = "sysfs"
 
     def __init__(self):
+        if not os.path.exists("/sys/class/gpio/export"):
+            raise RuntimeError("Linux sysfs GPIO interface not available")
         self._exported_pins: set[int] = set()
 
     def setup_pin(self, pin: int) -> None:
@@ -234,6 +285,7 @@ class _SysfsDriver(_BaseRelayDriver):
             try:
                 with open("/sys/class/gpio/export", "w") as f:
                     f.write(str(pin))
+                time.sleep(0.05)
             except Exception:
                 pass
         # Set direction
@@ -257,9 +309,9 @@ class _SysfsDriver(_BaseRelayDriver):
                 pass
 
     def cleanup(self) -> None:
-        for pin in self._exported_pins:
-            self.write_pin(pin, LEVEL_INACTIVE)
+        for pin in list(self._exported_pins):
             try:
+                self.write_pin(pin, LEVEL_INACTIVE)
                 with open("/sys/class/gpio/unexport", "w") as f:
                     f.write(str(pin))
             except Exception:
@@ -283,45 +335,47 @@ class _MockDriver(_BaseRelayDriver):
         self._states.clear()
 
 
+def _probe_driver(driver_cls: type[_BaseRelayDriver]) -> _BaseRelayDriver | None:
+    """Safely instantiate and test pin configuration for a candidate hardware driver."""
+    drv = None
+    try:
+        drv = driver_cls()
+        drv.setup_pin(ENTRANCE_PIN)
+        drv.setup_pin(EXIT_PIN)
+        drv.write_pin(ENTRANCE_PIN, LEVEL_INACTIVE)
+        drv.write_pin(EXIT_PIN, LEVEL_INACTIVE)
+        return drv
+    except Exception:
+        if drv is not None:
+            try:
+                drv.cleanup()
+            except Exception:
+                pass
+        return None
+
+
 def _init_driver() -> _BaseRelayDriver:
-    """Auto-detect available Raspberry Pi GPIO library or fall back to simulation."""
-    # 1. Try gpiozero
-    try:
-        drv = _GpiozeroDriver()
-        print("[relay] Initialized hardware driver: gpiozero")
-        return drv
-    except Exception:
-        pass
+    """Auto-detect available Raspberry Pi GPIO library with verified pin access or fall back to simulation."""
+    # Prioritize lgpio / gpiozero / RPi.GPIO / gpiod / sysfs with safe runtime probing
+    candidates = [
+        ("lgpio", _LgpioDriver),
+        ("gpiozero", _GpiozeroDriver),
+        ("RPi.GPIO", _RPiGPIODriver),
+        ("gpiod", _GpiodDriver),
+        ("sysfs", _SysfsDriver),
+    ]
 
-    # 2. Try RPi.GPIO
-    try:
-        drv = _RPiGPIODriver()
-        print("[relay] Initialized hardware driver: RPi.GPIO")
-        return drv
-    except Exception:
-        pass
-
-    # 3. Try gpiod
-    try:
-        drv = _GpiodDriver()
-        if drv._chip is not None:
-            print("[relay] Initialized hardware driver: gpiod")
+    for name, cls in candidates:
+        drv = _probe_driver(cls)
+        if drv is not None:
+            print(f"[relay] Initialized hardware driver: {name}")
             return drv
-    except Exception:
-        pass
 
-    # 4. Try Linux sysfs if on Linux with /sys/class/gpio
-    if os.path.exists("/sys/class/gpio/export"):
-        try:
-            drv = _SysfsDriver()
-            print("[relay] Initialized hardware driver: Linux sysfs")
-            return drv
-        except Exception:
-            pass
-
-    # 5. Mock simulator
-    print("[relay] No Raspberry Pi GPIO hardware driver found — running in Simulated Mode.")
-    return _MockDriver()
+    print("[relay] No active Raspberry Pi GPIO hardware driver found or permissions unavailable — running in Simulated Mode.")
+    mock = _MockDriver()
+    mock.setup_pin(ENTRANCE_PIN)
+    mock.setup_pin(EXIT_PIN)
+    return mock
 
 
 # ---------------------------------------------------------------------------
@@ -359,28 +413,34 @@ def _get_driver() -> _BaseRelayDriver:
     global _driver
     if _driver is None:
         _driver = _init_driver()
-        # Setup pins
-        _driver.setup_pin(ENTRANCE_PIN)
-        _driver.setup_pin(EXIT_PIN)
-        _driver.write_pin(ENTRANCE_PIN, LEVEL_INACTIVE)
-        _driver.write_pin(EXIT_PIN, LEVEL_INACTIVE)
     return _driver
 
 
 def init_relays() -> None:
     """Initialize GPIO pins and ensure all relays are in normal idle state (Red ON)."""
     with _lock:
-        drv = _get_driver()
-        drv.write_pin(ENTRANCE_PIN, LEVEL_INACTIVE)
-        drv.write_pin(EXIT_PIN, LEVEL_INACTIVE)
-        _gate_states["entrance"]["active"] = False
-        _gate_states["entrance"]["light"] = "RED"
-        _gate_states["exit"]["active"] = False
-        _gate_states["exit"]["light"] = "RED"
-        print(
-            f"[relay] System initialized: Entrance (GPIO {ENTRANCE_PIN} / Pin {BCM_TO_PHYSICAL.get(ENTRANCE_PIN, 11)}), "
-            f"Exit (GPIO {EXIT_PIN} / Pin {BCM_TO_PHYSICAL.get(EXIT_PIN, 13)}) -> Normal state: RED LIGHTS ON (NC)."
-        )
+        try:
+            drv = _get_driver()
+            drv.write_pin(ENTRANCE_PIN, LEVEL_INACTIVE)
+            drv.write_pin(EXIT_PIN, LEVEL_INACTIVE)
+            _gate_states["entrance"]["active"] = False
+            _gate_states["entrance"]["light"] = "RED"
+            _gate_states["exit"]["active"] = False
+            _gate_states["exit"]["light"] = "RED"
+            print(
+                f"[relay] System initialized ({drv.name}): Entrance (GPIO {ENTRANCE_PIN} / Pin {BCM_TO_PHYSICAL.get(ENTRANCE_PIN, 11)}), "
+                f"Exit (GPIO {EXIT_PIN} / Pin {BCM_TO_PHYSICAL.get(EXIT_PIN, 13)}) -> Normal state: RED LIGHTS ON (NC)."
+            )
+        except Exception as exc:
+            print(f"[relay] Relay initialization error ({exc}) -> falling back to Simulated Mode.")
+            global _driver
+            _driver = _MockDriver()
+            _driver.setup_pin(ENTRANCE_PIN)
+            _driver.setup_pin(EXIT_PIN)
+            _gate_states["entrance"]["active"] = False
+            _gate_states["entrance"]["light"] = "RED"
+            _gate_states["exit"]["active"] = False
+            _gate_states["exit"]["light"] = "RED"
 
 
 def _deactivate_gate_worker(gate: str) -> None:
