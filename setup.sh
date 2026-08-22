@@ -103,9 +103,12 @@ python "$PROJECT_DIR/download_models.py"
 echo -e "\n${YELLOW}[5/6] Initializing SQLite database schema & default admin credentials...${NC}"
 
 python -c "
-import database
+import database, importlib.util
 database.init_db()
-print('  Database tables verified successfully.')
+spec = importlib.util.spec_from_file_location('app_module', 'app.py')
+app_mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(app_mod)
+print('  Database tables & auth schema verified successfully.')
 "
 
 # ------------------------------------------------------------------------------

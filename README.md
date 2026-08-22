@@ -1,25 +1,19 @@
-# LPR System — Raspberry Pi 5 License Plate Recognition
+# LPR System — Raspberry Pi 5 License Plate Recognition & Multi-Vehicle RFID System
 
-Dual-camera license plate recognition system using a dedicated **YOLOv8
-license plate detector** and **EasyOCR** for text reading, running on a
-Raspberry Pi 5.
+Dual-camera license plate recognition system using **FastALPR** (`yolo-v9-s-608-license-plate-end2end` plate detector + `cct-s-v2-global-model` OCR) with hardware USB RFID card readers, running on a Raspberry Pi 5.
 
 ## Features
 
+- **FastALPR engine** — high-accuracy ONNX plate detection (`yolo-v9-s-608-license-plate-end2end`) and global OCR (`cct-s-v2-global-model`)
+- **Multi-Vehicle RFID Gate Access** — supports assigning multiple license plates to a single user's RFID tag
+- **Superadmin CRUD Management** — full Create, Read, Update, Delete controls for user accounts, RFID tags, and vehicle assignments
 - **Dual USB webcams** — entrance (`/dev/video0`) and exit (`/dev/video1`)
-- **Motion detection** (MOG2) → **YOLOv8 plate detection** → **EasyOCR plate reading**
-- **RFID verification layer** with pending scan prompts and match/mismatch status
-- YOLO bounding boxes drawn on the live MJPEG stream
-- 10-second cooldown prevents duplicate captures of the same plate
-- Unknown OCR results are queued for required manual plate input (not logged as UNKNOWN)
-- Pending manual captures can be explicitly discarded from the dashboard prompt
-- Wrong detections can be corrected from the dashboard; corrections are learned and reused by OCR
-- Role-based login for `superadmin` and `guard` sessions
-- Dedicated guard camera-assignment page with saved device mapping
-- Dedicated flagged-entry review workflow (confirm / correct / reject)
-- Comprehensive logbook with filters and CSV/PDF export
-- SQLite database logs every detection
-- Dark-themed Flask dashboard with live feeds, stats, and date filtering
+- **Concurrent Dual RFID Readers** — instant hardware event handling via `/dev/input/event*`
+- **10-second cooldown** prevents duplicate captures of the same plate
+- **Role-based session auth** for `superadmin` and `guard` roles
+- **Logbook with CSV/PDF Export** & date filtering
+- **SQLite database** logs every detection and verification result
+- **Modern Dark Dashboard** with live feeds, stats, and real-time activity stream
 
 ## Hardware
 

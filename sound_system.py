@@ -26,13 +26,15 @@ VALID_SOUNDS = {
     "goodbye": "goodbye.mp3",
 }
 
-# State to track latest sound event for web clients
+# State to track latest sound event and prevent duplicate rapid playback
 _sound_lock = threading.Lock()
+_last_sound_times: dict[str, float] = {}
 _last_sound_event: dict[str, Any] = {
     "sound": None,
     "gate": None,
     "timestamp": None,
     "epoch": 0.0,
+    "played_on_host": False,
 }
 
 
@@ -69,9 +71,29 @@ def play_sound(sound_name: str, gate: str | None = None, delay_seconds: float = 
         print(f"[sound] File not found: {sound_path}")
         return
 
+    # Deduplicate rapid repeated sound requests within 1.0s
+    now = time.time()
+    with _sound_lock:
+        last_time = _last_sound_times.get(clean_name, 0.0)
+        if (now + delay_seconds) - last_time < 1.0:
+            print(f"[sound] Suppressed duplicate '{clean_name}' sound trigger.")
+            return
+        _last_sound_times[clean_name] = now + delay_seconds
+
     def _play_worker():
         if delay_seconds > 0:
             time.sleep(delay_seconds)
+
+        player_cmd = _get_audio_player()
+        played_on_host = False
+
+        if player_cmd:
+            try:
+                cmd = player_cmd + [sound_path]
+                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10.0)
+                played_on_host = True
+            except Exception as exc:
+                print(f"[sound] Playback error for {filename}: {exc}")
 
         # Update last sound event for browser clients
         with _sound_lock:
@@ -82,18 +104,8 @@ def play_sound(sound_name: str, gate: str | None = None, delay_seconds: float = 
                 "gate": gate,
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "epoch": time.time(),
+                "played_on_host": played_on_host,
             }
-
-        # Try host audio playback
-        player_cmd = _get_audio_player()
-        if player_cmd:
-            try:
-                cmd = player_cmd + [sound_path]
-                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10.0)
-            except Exception as exc:
-                print(f"[sound] Playback error for {filename}: {exc}")
-        else:
-            print(f"[sound] (No CLI player found, sound broadcasted to web): {clean_name}")
 
     threading.Thread(target=_play_worker, daemon=True, name=f"sound-{clean_name}").start()
 
@@ -124,4 +136,3 @@ def get_last_sound_event() -> dict[str, Any]:
     """Return the most recent sound event for dashboard polling / web audio."""
     with _sound_lock:
         return dict(_last_sound_event)
-

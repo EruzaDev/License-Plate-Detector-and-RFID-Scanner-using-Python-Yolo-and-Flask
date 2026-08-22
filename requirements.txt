@@ -1,8 +1,6 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch
 torchvision
-ultralytics
-lapx>=0.5.2
 easyocr
 opencv-python
 flask
@@ -18,3 +16,6 @@ fastapi
 uvicorn
 evdev
 gpiozero
+fast-alpr[onnx]
+onnxruntime
+RPi.GPIO; platform_machine=="armv7l" or platform_machine=="aarch64"

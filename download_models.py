@@ -87,4 +87,15 @@ print("Downloading EasyOCR English model...")
 easyocr.Reader(["en"], gpu=False)
 print("  EasyOCR models cached.")
 
-print("\nAll models ready. You can now run: python app.py")
+print("Warming up Fast-ALPR (yolo-v9-s-608 + cct-s-v2-global-model)...")
+try:
+    from fast_alpr import ALPR
+    ALPR(
+        detector_model="yolo-v9-s-608-license-plate-end2end",
+        ocr_model="cct-s-v2-global-model",
+    )
+    print("  Fast-ALPR models downloaded & cached successfully.")
+except Exception as err:
+    print(f"  Fast-ALPR warm-up notice: {err}")
+
+print("\nAll models ready. You can now run: ./start.sh or python app.py")

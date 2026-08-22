@@ -46,6 +46,7 @@ from database import (
     get_registered_plates,
     get_registered_plate_records,
     register_plate,
+    delete_registered_plate,
     get_pending_manual_inputs,
     resolve_manual_input,
     discard_manual_input,
@@ -240,17 +241,129 @@ def _create_auth_user(
 
     user_id = int(cur.lastrowid)
     if license_plate:
-        conn.execute(
-            """
-            INSERT INTO vehicles (user_id, plate_number)
-            VALUES (?, ?)
-            """,
-            (user_id, license_plate),
-        )
+        plates = [p.strip() for p in str(license_plate).split(",") if p.strip()]
+        for p in plates:
+            conn.execute(
+                """
+                INSERT INTO vehicles (user_id, plate_number)
+                VALUES (?, ?)
+                """,
+                (user_id, p),
+            )
 
     conn.commit()
     conn.close()
+
+    if license_plate:
+        plates = [p.strip() for p in str(license_plate).split(",") if p.strip()]
+        for p in plates:
+            register_plate(plate_number=p, owner_name=name, rfid_uid=rfid_uid or None)
+
     return user_id
+
+
+def _get_auth_user_by_id(user_id: int) -> dict | None:
+    conn = _get_auth_connection()
+    row = conn.execute(
+        """
+        SELECT
+            u.id,
+            u.name,
+            u.email,
+            u.role,
+            u.rfid_uid,
+            u.is_active,
+            u.created_at,
+            COALESCE(GROUP_CONCAT(v.plate_number, ', '), '') AS plate_numbers
+        FROM users u
+        LEFT JOIN vehicles v ON v.user_id = u.id
+        WHERE u.id = ?
+        GROUP BY u.id, u.name, u.email, u.role, u.rfid_uid, u.is_active, u.created_at
+        """,
+        (user_id,),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def _update_auth_user(
+    user_id: int,
+    name: str,
+    email: str,
+    role: str,
+    rfid_uid: str | None = None,
+    license_plate: str | None = None,
+    is_active: int = 1,
+    password: str | None = None,
+) -> bool:
+    conn = _get_auth_connection()
+    if password:
+        password_hash = bcrypt.generate_password_hash(password).decode("utf-8")
+        conn.execute(
+            """
+            UPDATE users
+            SET name = ?, email = ?, password_hash = ?, role = ?, rfid_uid = ?, is_active = ?
+            WHERE id = ?
+            """,
+            (name, email, password_hash, role, rfid_uid, is_active, user_id),
+        )
+    else:
+        conn.execute(
+            """
+            UPDATE users
+            SET name = ?, email = ?, role = ?, rfid_uid = ?, is_active = ?
+            WHERE id = ?
+            """,
+            (name, email, role, rfid_uid, is_active, user_id),
+        )
+
+    conn.execute("DELETE FROM vehicles WHERE user_id = ?", (user_id,))
+    if license_plate:
+        plates = [p.strip() for p in str(license_plate).split(",") if p.strip()]
+        for p in plates:
+            conn.execute(
+                """
+                INSERT INTO vehicles (user_id, plate_number)
+                VALUES (?, ?)
+                """,
+                (user_id, p),
+            )
+
+    conn.commit()
+    conn.close()
+
+    if license_plate:
+        plates = [p.strip() for p in str(license_plate).split(",") if p.strip()]
+        for p in plates:
+            register_plate(plate_number=p, owner_name=name, rfid_uid=rfid_uid or None)
+
+    return True
+
+
+def _delete_auth_user(user_id: int) -> bool:
+    conn = _get_auth_connection()
+    vehicles = conn.execute("SELECT plate_number FROM vehicles WHERE user_id = ?", (user_id,)).fetchall()
+    for v in vehicles:
+        delete_registered_plate(v["plate_number"])
+
+    conn.execute("DELETE FROM vehicles WHERE user_id = ?", (user_id,))
+    cur = conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+    return cur.rowcount > 0
+
+
+def _toggle_user_status(user_id: int) -> dict | None:
+    conn = _get_auth_connection()
+    row = conn.execute("SELECT id, is_active FROM users WHERE id = ?", (user_id,)).fetchone()
+    if not row:
+        conn.close()
+        return None
+    new_status = 0 if row["is_active"] else 1
+    conn.execute("UPDATE users SET is_active = ? WHERE id = ?", (new_status, user_id))
+    conn.commit()
+    conn.close()
+    return {"id": user_id, "is_active": new_status}
 
 
 def _current_role() -> str:
@@ -662,6 +775,88 @@ def users_create():
         )
 
     flash(f"{new_role.title()} account created successfully.", "success")
+    return redirect(url_for("users_management"))
+
+
+@app.route("/api/users/<int:user_id>", methods=["GET"])
+@_role_required("superadmin")
+def api_get_user(user_id: int):
+    """Return user account details as JSON for editing."""
+    u = _get_auth_user_by_id(user_id)
+    if not u:
+        return jsonify({"error": "User not found."}), 404
+    return jsonify({"user": u})
+
+
+@app.route("/users/<int:user_id>/update", methods=["POST"])
+@_role_required("superadmin")
+def users_update(user_id: int):
+    """Update user account details (Superadmin only)."""
+    user = _get_auth_user_by_id(user_id)
+    if not user:
+        flash("User not found.", "error")
+        return redirect(url_for("users_management"))
+
+    name = request.form.get("name", "").strip()
+    email = request.form.get("username", "") or request.form.get("email", "")
+    email = str(email).strip().lower()
+    password = request.form.get("password", "").strip() or None
+    role = request.form.get("role", "").strip().lower() or user.get("role")
+    raw_manual_plate = request.form.get("manual_plate", "").strip()
+    rfid_uid = _normalize_rfid(request.form.get("rfid_uid", "")) or None
+    is_active = 1 if request.form.get("is_active") in ("1", "true", "on") else 0
+
+    if raw_manual_plate:
+        plates_list = [_normalize_plate(p) for p in raw_manual_plate.split(",") if _normalize_plate(p)]
+        final_plate = ", ".join(plates_list)
+    else:
+        final_plate = ""
+
+    if role == "user" and not name:
+        flash("Driver name is required for user accounts.", "error")
+        return redirect(url_for("users_management"))
+
+    _update_auth_user(
+        user_id=user_id,
+        name=name or email,
+        email=email,
+        role=role,
+        rfid_uid=rfid_uid,
+        license_plate=final_plate or None,
+        is_active=is_active,
+        password=password,
+    )
+    flash(f"Account for '{name or email}' updated successfully.", "success")
+    return redirect(url_for("users_management"))
+
+
+@app.route("/users/<int:user_id>/delete", methods=["POST"])
+@_role_required("superadmin")
+def users_delete(user_id: int):
+    """Delete a user account and associated vehicle entries (Superadmin only)."""
+    current_auth = session.get("auth_user") or {}
+    if current_auth.get("id") == user_id:
+        flash("You cannot delete your own active superadmin account.", "error")
+        return redirect(url_for("users_management"))
+
+    ok = _delete_auth_user(user_id)
+    if ok:
+        flash("User account deleted successfully.", "success")
+    else:
+        flash("User not found or could not be deleted.", "error")
+    return redirect(url_for("users_management"))
+
+
+@app.route("/users/<int:user_id>/toggle_status", methods=["POST"])
+@_role_required("superadmin")
+def users_toggle_status(user_id: int):
+    """Toggle user active/inactive status (Superadmin only)."""
+    res = _toggle_user_status(user_id)
+    if not res:
+        flash("User not found.", "error")
+    else:
+        st = "Active" if res["is_active"] else "Inactive"
+        flash(f"User account status updated to {st}.", "success")
     return redirect(url_for("users_management"))
 
 

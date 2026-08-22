@@ -542,96 +542,6 @@
         }
         .btn-correct-row:hover { background: #4f46e5; }
 
-        /* ====== Scan result modal ====== */
-        .scan-modal {
-            position: fixed;
-            inset: 0;
-            background: rgba(3, 7, 18, .75);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 1001;
-            padding: 1rem;
-        }
-        .scan-modal.hidden { display: none; }
-        .scan-card {
-            width: min(560px, 100%);
-            background: #0f172a;
-            border: 1px solid #334155;
-            border-radius: 14px;
-            box-shadow: 0 20px 40px rgba(0,0,0,.45);
-            padding: 1rem;
-        }
-        .scan-card h3 {
-            font-size: 1rem;
-            margin-bottom: .35rem;
-        }
-        .scan-card p {
-            color: #94a3b8;
-            font-size: .84rem;
-            margin-bottom: .65rem;
-        }
-        .scan-preview {
-            width: 100%;
-            max-height: 190px;
-            object-fit: contain;
-            background: #000;
-            border: 1px solid #334155;
-            border-radius: 8px;
-            margin-bottom: .8rem;
-        }
-        .scan-field {
-            margin-bottom: .55rem;
-        }
-        .scan-field label {
-            display: block;
-            font-size: .82rem;
-            color: #94a3b8;
-            margin-bottom: .25rem;
-        }
-        .scan-field input {
-            width: 100%;
-            background: #020617;
-            border: 1px solid #334155;
-            border-radius: 8px;
-            color: #e5e7eb;
-            padding: .55rem .7rem;
-            font-size: .92rem;
-            text-transform: uppercase;
-        }
-        .scan-field input.readonly {
-            background: #111827;
-            color: #94a3b8;
-        }
-        .scan-actions {
-            display: flex;
-            gap: .55rem;
-            justify-content: flex-end;
-        }
-        .btn-scan-submit {
-            background: #2563eb;
-            color: #fff;
-            border: none;
-            border-radius: 8px;
-            padding: .5rem .9rem;
-            cursor: pointer;
-            font-weight: 600;
-        }
-        .btn-scan-close {
-            background: #334155;
-            color: #e2e8f0;
-            border: none;
-            border-radius: 8px;
-            padding: .5rem .9rem;
-            cursor: pointer;
-            font-weight: 600;
-        }
-        .scan-error {
-            min-height: 1rem;
-            color: #f87171;
-            font-size: .8rem;
-            margin-top: .35rem;
-        }
 
         /* ====== Footer ====== */
         footer {
@@ -823,34 +733,6 @@
 
 </div>
 
-<div class="scan-modal hidden" id="scan-modal">
-    <div class="scan-card">
-        <h3>Vehicle Scan Detected</h3>
-        <p id="scan-meta">Review the detected plate, update it manually if needed, and scan/input ID.</p>
-        <img id="scan-image" class="scan-preview" alt="Vehicle scan capture" style="display:none;">
-
-        <div class="scan-field">
-            <label for="scan-detected-plate">Detected License Plate</label>
-            <input id="scan-detected-plate" class="readonly" readonly>
-        </div>
-
-        <div class="scan-field">
-            <label for="scan-manual-plate">Manual Plate Override (optional)</label>
-            <input id="scan-manual-plate" type="text" placeholder="Enter corrected plate">
-        </div>
-
-        <div class="scan-field">
-            <label for="scan-id-input">ID to Scan / Input</label>
-            <input id="scan-id-input" type="text" placeholder="Scan or enter ID">
-        </div>
-
-        <div class="scan-actions">
-            <button class="btn-scan-close" onclick="closeScanPrompt()">Close</button>
-            <button class="btn-scan-submit" onclick="submitScanPrompt()">Submit</button>
-        </div>
-        <div class="scan-error" id="scan-error"></div>
-    </div>
-</div>
 
 <div class="manual-modal hidden" id="manual-modal">
     <div class="manual-card">
@@ -894,113 +776,18 @@
     const manualImage = document.getElementById('manual-image');
     const manualPlateInput = document.getElementById('manual-plate-input');
     const manualError = document.getElementById('manual-error');
-    const scanModal = document.getElementById('scan-modal');
-    const scanMeta = document.getElementById('scan-meta');
-    const scanImage = document.getElementById('scan-image');
-    const scanDetectedPlate = document.getElementById('scan-detected-plate');
-    const scanManualPlate = document.getElementById('scan-manual-plate');
-    const scanIdInput = document.getElementById('scan-id-input');
-    const scanError = document.getElementById('scan-error');
     const correctModal = document.getElementById('correct-modal');
     const correctMeta = document.getElementById('correct-meta');
     const correctPlateInput = document.getElementById('correct-plate-input');
     const correctError = document.getElementById('correct-error');
 
     let manualActiveItem = null;
-    let scanActiveItem = null;
     let correctionActiveItem = null;
     let lastSeenDetectionId = 0;
     let initializedDetectionStream = false;
 
     function maskSensitiveInfo(text) {
         return String(text || '').replace(/rfid/gi, 'ID');
-    }
-
-    function showScanPrompt(item) {
-        if (!item || scanActiveItem || manualActiveItem || correctionActiveItem) return;
-
-        scanActiveItem = item;
-        const detectedPlate = (item.plate_number || 'UNKNOWN').toUpperCase();
-        scanMeta.textContent =
-            'License plate: ' + detectedPlate +
-            ' | Camera: ' + item.camera +
-            ' | Time: ' + item.timestamp;
-
-        if (item.image_url) {
-            scanImage.src = item.image_url;
-            scanImage.style.display = 'block';
-        } else {
-            scanImage.removeAttribute('src');
-            scanImage.style.display = 'none';
-        }
-
-        scanDetectedPlate.value = detectedPlate;
-        scanManualPlate.value = '';
-        scanIdInput.value = '';
-        scanError.textContent = '';
-        scanModal.classList.remove('hidden');
-        scanIdInput.focus();
-    }
-
-    function closeScanPrompt() {
-        scanModal.classList.add('hidden');
-        scanActiveItem = null;
-        scanError.textContent = '';
-    }
-
-    async function submitScanPrompt() {
-        if (!scanActiveItem) return;
-
-        const manualPlate = scanManualPlate.value.trim().toUpperCase();
-        const scannedId = scanIdInput.value.trim().toUpperCase();
-        const currentPlate = String(scanActiveItem.plate_number || '').toUpperCase();
-
-        if (!manualPlate && !scannedId) {
-            scanError.textContent = 'Scan/input ID or provide a manual plate update before submitting.';
-            return;
-        }
-
-        scanError.textContent = '';
-        try {
-            if (manualPlate && manualPlate !== 'UNKNOWN' && manualPlate !== currentPlate) {
-                const correctionRes = await fetch('/api/detections/' + scanActiveItem.id + '/correct', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({plate_number: manualPlate}),
-                });
-                const correctionData = await correctionRes.json();
-                if (!correctionRes.ok || !correctionData.ok) {
-                    scanError.textContent = maskSensitiveInfo(correctionData.error || 'Failed to save manual plate.');
-                    return;
-                }
-            }
-
-            if (scannedId) {
-                const idRes = await fetch('/api/rfid/verify', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        detection_id: scanActiveItem.id,
-                        scanned_uid: scannedId,
-                    }),
-                });
-                const idData = await idRes.json();
-                if (!idRes.ok || !idData.ok) {
-                    const message = maskSensitiveInfo(idData.error || 'Failed to verify scanned ID.');
-                    const isNotRequired = /does not require/i.test(message);
-                    if (!isNotRequired) {
-                        scanError.textContent = message;
-                        return;
-                    }
-                }
-            }
-
-            closeScanPrompt();
-            await loadStats();
-            await loadDetections(dateInput.value || null);
-        } catch (e) {
-            scanError.textContent = 'Network error while saving scan details.';
-        }
     }
 
     // ---- Load available video devices and populate selectors ----
@@ -1157,9 +944,6 @@
                     lastSeenDetectionId = latestId;
                 } else if (latestId > lastSeenDetectionId) {
                     lastSeenDetectionId = latestId;
-                    if (!dateStr) {
-                        showScanPrompt(latestRow);
-                    }
                 }
             }
 
@@ -1522,7 +1306,7 @@
             const res = await fetch('/api/sound/last_event');
             const data = await res.json();
             if (data && data.epoch && data.epoch > lastSoundEpoch && data.file) {
-                if (lastSoundEpoch > 0) {
+                if (lastSoundEpoch > 0 && !data.played_on_host) {
                     try {
                         const audio = new Audio('/sound/' + data.file);
                         audio.play().catch(() => {

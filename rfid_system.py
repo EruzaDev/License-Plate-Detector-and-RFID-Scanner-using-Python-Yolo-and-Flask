@@ -344,10 +344,27 @@ def _update_global_scan(camera_name: str, uid: str) -> None:
 
 def _default_on_scan(camera_name: str, scanned_uid: str) -> None:
     """
-    Auto-verify the most recent NOT_SCANNED detection for this gate against the scanned UID.
-    Gate separation: 'entrance' scans ONLY verify entrance detections; 'exit' scans ONLY verify exit detections.
+    On RFID card scan:
+    1. Instantly trigger a camera frame capture and plate OCR for this gate.
+    2. Fall back to auto-verifying pending DB detections if camera snapshot is unavailable.
     """
     clean_gate = str(camera_name or "").strip().lower()
+
+    # Step 1: Try instant live camera capture
+    try:
+        from camera_system import trigger_instant_capture
+        res = trigger_instant_capture(camera_name=clean_gate, rfid_uid=scanned_uid)
+        if res is not None:
+            reader = _readers.get(clean_gate)
+            if reader:
+                with reader._lock:
+                    reader._last_result = "ACCESS_GRANTED" if res.get("access_granted") else "DENIED"
+            print(f"[rfid-{clean_gate}] Instant camera capture executed for UID {scanned_uid}: plate={res.get('plate_number')}")
+            return
+    except Exception as exc:
+        print(f"[rfid-{clean_gate}] Instant capture error ({exc}); falling back to pending DB verification.")
+
+    # Step 2: Fallback to pending DB detections
     try:
         pending = get_pending_rfid_verifications(limit=50)
     except Exception as exc:
@@ -362,7 +379,7 @@ def _default_on_scan(camera_name: str, scanned_uid: str) -> None:
             break
 
     if target is None:
-        print(f"[rfid-{clean_gate}] Scanned UID {scanned_uid}, but no pending detections found for gate '{clean_gate}'.")
+        print(f"[rfid-{clean_gate}] Scanned UID {scanned_uid}, but no active camera frame or pending detection found for '{clean_gate}'.")
         # Check if the tag itself is registered in the system
         if is_rfid_registered(scanned_uid):
             play_sound("successful", gate=clean_gate)

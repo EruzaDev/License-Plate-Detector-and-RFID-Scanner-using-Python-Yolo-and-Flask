@@ -28,6 +28,29 @@ except Exception:  # pragma: no cover - graceful fallback when rapidfuzz is miss
 # English only; GPU disabled for Raspberry Pi 5 (CPU-only).
 _reader = easyocr.Reader(["en"], gpu=False)
 
+_fast_alpr_instance = None
+_fast_alpr_failed = False
+
+
+def get_fast_alpr():
+    """Return singleton ALPR instance if fast_alpr is installed."""
+    global _fast_alpr_instance, _fast_alpr_failed
+    if _fast_alpr_failed:
+        return None
+    if _fast_alpr_instance is None:
+        try:
+            from fast_alpr import ALPR
+            _fast_alpr_instance = ALPR(
+                detector_model="yolo-v9-s-608-license-plate-end2end",
+                ocr_model="cct-s-v2-global-model",
+            )
+            print("[ocr_processor] Fast-ALPR engine (yolo-v9-s-608 + cct-s-v2-global) loaded successfully.")
+        except Exception as err:
+            print(f"[ocr_processor] Fast-ALPR unavailable ({err}); using EasyOCR fallback.")
+            _fast_alpr_failed = True
+            return None
+    return _fast_alpr_instance
+
 # Regex: keep only alphanumeric characters typical of license plates
 _PLATE_PATTERN = re.compile(r"[^A-Z0-9]")
 
@@ -84,36 +107,19 @@ def _coerce_classic_plate(raw: str) -> str:
 
 def correct_ph_plate(text: str | None) -> tuple[str, bool, str]:
     """
-    Apply PH plate cleanup rules and position-aware OCR correction.
-
-    Returns
-    -------
-    tuple[str, bool, str]
-        (corrected_plate_no_space, is_valid, format_name)
-        format_name is one of: MODERN, CLASSIC, INVALID.
+    Normalize plate text output from Fast-ALPR without coercing characters.
+    Preserves exact OCR text output matching Fast-ALPR / HuggingFace demo.
     """
     cleaned = normalize_plate_text(text)
     if not cleaned or cleaned == "UNKNOWN":
         return ("UNKNOWN", False, "INVALID")
 
-    attempts: list[tuple[str, str]] = []
-    if len(cleaned) >= 7:
-        attempts.append(("MODERN", _coerce_modern_plate(cleaned[:7])))
-    if len(cleaned) >= 6:
-        attempts.append(("CLASSIC", _coerce_classic_plate(cleaned[:6])))
+    if _PH_MODERN_PATTERN.fullmatch(cleaned):
+        return (cleaned, True, "MODERN")
+    if _PH_CLASSIC_PATTERN.fullmatch(cleaned):
+        return (cleaned, True, "CLASSIC")
 
-    if not attempts:
-        return (cleaned, False, "INVALID")
-
-    for fmt, candidate in attempts:
-        if fmt == "MODERN" and _PH_MODERN_PATTERN.fullmatch(candidate):
-            return (candidate, True, fmt)
-        if fmt == "CLASSIC" and _PH_CLASSIC_PATTERN.fullmatch(candidate):
-            return (candidate, True, fmt)
-
-    # Keep the highest-priority corrected candidate even when invalid.
-    best_fmt, best_candidate = attempts[0]
-    return (best_candidate, False, best_fmt)
+    return (cleaned, True, "FAST_ALPR")
 
 
 def format_plate_for_display(plate: str | None) -> str:
@@ -446,10 +452,43 @@ _PREPROCESS_PIPELINES = [
 
 def _ocr_candidates(image: np.ndarray) -> list[tuple[str, float]]:
     """
-    Run OCR on multiple preprocessed variants of `image`.
-    Returns a list of (plate_text, confidence) for every valid hit.
+    Run OCR on image variants using Fast-ALPR if available, falling back to EasyOCR.
+    Returns a list of (plate_text, confidence) for valid hits.
     """
     candidates: list[tuple[str, float]] = []
+    alpr = get_fast_alpr()
+
+    if alpr is not None:
+        try:
+            results = alpr.predict(image)
+            if results:
+                for res in results:
+                    if res.ocr and res.ocr.text:
+                        cleaned = normalize_plate_text(res.ocr.text)
+                        if len(cleaned) >= _MIN_PLATE_LEN:
+                            conf = (
+                                sum(res.ocr.confidence) / len(res.ocr.confidence)
+                                if isinstance(res.ocr.confidence, list) and res.ocr.confidence
+                                else (res.ocr.confidence if isinstance(res.ocr.confidence, (int, float)) else res.detection.confidence)
+                            )
+                            candidates.append((cleaned, round(float(conf), 4)))
+            if not candidates:
+                ocr_res = alpr.ocr.predict(image)
+                if ocr_res and ocr_res.text:
+                    cleaned = normalize_plate_text(ocr_res.text)
+                    if len(cleaned) >= _MIN_PLATE_LEN:
+                        conf = (
+                            sum(ocr_res.confidence) / len(ocr_res.confidence)
+                            if isinstance(ocr_res.confidence, list) and ocr_res.confidence
+                            else (ocr_res.confidence if isinstance(ocr_res.confidence, (int, float)) else 0.0)
+                        )
+                        candidates.append((cleaned, round(float(conf), 4)))
+        except Exception:
+            pass
+
+        if candidates:
+            return candidates
+
     for pipeline in _PREPROCESS_PIPELINES:
         processed = pipeline(image)
         results = _reader.readtext(processed, detail=1, paragraph=False)

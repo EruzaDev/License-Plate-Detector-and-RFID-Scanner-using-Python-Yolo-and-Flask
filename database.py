@@ -463,27 +463,49 @@ def register_plate(
     rfid_uid: str | None = None,
 ) -> bool:
     """
-    Register or update a known plate for fuzzy matching.
-    Returns False when the plate is empty after normalization.
+    Register or update known plate(s) for a user.
+    Supports single plate string or comma-separated multiple plates (e.g. 'ABC1234, XYZ9876').
     """
+    if not plate_number:
+        return False
+
+    raw_plates = [p.strip() for p in str(plate_number).split(",") if p.strip()]
+    if not raw_plates:
+        return False
+
+    normalized_uid = _normalize_rfid_uid(rfid_uid) or None
+    conn = _get_connection()
+    registered_any = False
+
+    for p in raw_plates:
+        normalized = _normalize_plate(p)
+        if not normalized:
+            continue
+        conn.execute(
+            """
+            INSERT INTO registered_plates (plate_number, owner_name, rfid_uid)
+            VALUES (?, ?, ?)
+            ON CONFLICT(plate_number) DO UPDATE SET
+                owner_name = COALESCE(excluded.owner_name, registered_plates.owner_name),
+                rfid_uid = COALESCE(excluded.rfid_uid, registered_plates.rfid_uid)
+            """,
+            (normalized, owner_name, normalized_uid),
+        )
+        registered_any = True
+
+    conn.commit()
+    return registered_any
+
+
+def delete_registered_plate(plate_number: str) -> bool:
+    """Delete a plate registration entry."""
     normalized = _normalize_plate(plate_number)
     if not normalized:
         return False
-    normalized_uid = _normalize_rfid_uid(rfid_uid) or None
-
     conn = _get_connection()
-    conn.execute(
-        """
-        INSERT INTO registered_plates (plate_number, owner_name, rfid_uid)
-        VALUES (?, ?, ?)
-        ON CONFLICT(plate_number) DO UPDATE SET
-            owner_name = COALESCE(excluded.owner_name, registered_plates.owner_name),
-            rfid_uid = COALESCE(excluded.rfid_uid, registered_plates.rfid_uid)
-        """,
-        (normalized, owner_name, normalized_uid),
-    )
+    cur = conn.execute("DELETE FROM registered_plates WHERE plate_number = ?", (normalized,))
     conn.commit()
-    return True
+    return cur.rowcount > 0
 
 
 def get_registered_plates() -> list[str]:
@@ -511,6 +533,103 @@ def get_registered_plate_record(plate_number: str) -> dict | None:
         (normalized,),
     ).fetchone()
     return dict(row) if row else None
+
+
+def get_plates_by_rfid_uid(rfid_uid: str) -> list[dict]:
+    """Return all registered plate records associated with a specific RFID UID across registered_plates and users/vehicles tables."""
+    normalized_uid = _normalize_rfid_uid(rfid_uid)
+    if not normalized_uid:
+        return []
+
+    conn = _get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT plate_number, owner_name, rfid_uid, created_at
+            FROM (
+                SELECT plate_number, owner_name, rfid_uid, created_at
+                FROM registered_plates
+                WHERE UPPER(REPLACE(REPLACE(rfid_uid, ' ', ''), '-', '')) = ?
+                UNION ALL
+                SELECT v.plate_number, u.name AS owner_name, u.rfid_uid, u.created_at
+                FROM users u
+                JOIN vehicles v ON v.user_id = u.id
+                WHERE UPPER(REPLACE(REPLACE(u.rfid_uid, ' ', ''), '-', '')) = ?
+            )
+            ORDER BY plate_number ASC
+            """,
+            (normalized_uid, normalized_uid),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        # Fallback if users or vehicles table does not exist in standalone mode
+        rows = conn.execute(
+            """
+            SELECT plate_number, owner_name, rfid_uid, created_at
+            FROM registered_plates
+            WHERE UPPER(REPLACE(REPLACE(rfid_uid, ' ', ''), '-', '')) = ?
+            ORDER BY plate_number ASC
+            """,
+            (normalized_uid,),
+        ).fetchall()
+
+    seen = set()
+    result = []
+    for r in rows:
+        raw_plates = [p.strip() for p in str(r["plate_number"]).split(",") if p.strip()]
+        for p in raw_plates:
+            norm_p = _normalize_plate(p)
+            if norm_p and norm_p not in seen:
+                seen.add(norm_p)
+                entry = dict(r)
+                entry["plate_number"] = norm_p
+                result.append(entry)
+    return result
+
+
+def verify_rfid_plate_match(rfid_uid: str, scanned_plate: str) -> tuple[bool, str | None]:
+    """
+    Verify if a scanned plate matches ANY of the vehicles registered to the given RFID UID.
+    Returns (is_match, matched_registered_plate).
+    Supports exact matching, OCR character confusion pairs, and fuzzy string similarity.
+    """
+    normalized_uid = _normalize_rfid_uid(rfid_uid)
+    normalized_plate = _normalize_plate(scanned_plate)
+
+    if not normalized_uid or not normalized_plate or normalized_plate == "UNKNOWN":
+        return False, None
+
+    user_vehicles = get_plates_by_rfid_uid(normalized_uid)
+    if not user_vehicles:
+        return False, None
+
+    # 1. Exact match
+    for v in user_vehicles:
+        reg_p = _normalize_plate(v["plate_number"])
+        if reg_p == normalized_plate:
+            return True, reg_p
+
+    # 2. OCR confusion / fuzzy match against any allowed vehicle for this RFID
+    for v in user_vehicles:
+        reg_p = _normalize_plate(v["plate_number"])
+        if len(reg_p) == len(normalized_plate) and len(reg_p) >= 4:
+            confusables = 0
+            mismatches = 0
+            for c1, c2 in zip(reg_p, normalized_plate):
+                if c1 == c2:
+                    continue
+                from ocr_processor import are_ocr_confusable
+                if are_ocr_confusable(c1, c2):
+                    confusables += 1
+                else:
+                    mismatches += 1
+            if mismatches == 0 and confusables <= 2:
+                return True, reg_p
+
+        score = SequenceMatcher(None, reg_p, normalized_plate).ratio() * 100.0
+        if score >= 80.0:
+            return True, reg_p
+
+    return False, None
 
 
 def get_registered_plate_records(limit: int = 200) -> list:
