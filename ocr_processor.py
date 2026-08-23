@@ -16,17 +16,12 @@ from difflib import SequenceMatcher
 
 import cv2
 import numpy as np
-import easyocr
-
 try:
-    from rapidfuzz import fuzz, process
-except Exception:  # pragma: no cover - graceful fallback when rapidfuzz is missing
-    fuzz = None
-    process = None
-
-# Initialise the EasyOCR reader once (model load is expensive).
-# English only; GPU disabled for Raspberry Pi 5 (CPU-only).
-_reader = easyocr.Reader(["en"], gpu=False)
+    import easyocr
+    _reader = easyocr.Reader(["en"], gpu=False)
+except Exception as _easyocr_err:
+    easyocr = None
+    _reader = None
 
 _fast_alpr_instance = None
 _fast_alpr_failed = False
@@ -489,13 +484,14 @@ def _ocr_candidates(image: np.ndarray) -> list[tuple[str, float]]:
         if candidates:
             return candidates
 
-    for pipeline in _PREPROCESS_PIPELINES:
-        processed = pipeline(image)
-        results = _reader.readtext(processed, detail=1, paragraph=False)
-        for _, text, conf in results:
-            cleaned = _PLATE_PATTERN.sub("", text.upper())
-            if len(cleaned) >= _MIN_PLATE_LEN:
-                candidates.append((cleaned, round(float(conf), 4)))
+    if _reader is not None:
+        for pipeline in _PREPROCESS_PIPELINES:
+            processed = pipeline(image)
+            results = _reader.readtext(processed, detail=1, paragraph=False)
+            for _, text, conf in results:
+                cleaned = _PLATE_PATTERN.sub("", text.upper())
+                if len(cleaned) >= _MIN_PLATE_LEN:
+                    candidates.append((cleaned, round(float(conf), 4)))
     return candidates
 
 

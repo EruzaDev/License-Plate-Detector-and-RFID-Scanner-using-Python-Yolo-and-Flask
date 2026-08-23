@@ -498,17 +498,35 @@
         return (v || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
     }
 
-    function updateRfidCard(uid, sourceText) {
+    async function updateRfidCard(uid, sourceText) {
         const cleanUid = normalizeRfid(uid);
         if (!cleanUid) return;
 
         rfidUid.value = cleanUid;
         rfidDisplayUid.textContent = cleanUid;
         rfidDisplayUid.style.color = '#22c55e';
-        rfidDisplayDetail.textContent = '✓ Scanned & Verified (' + (sourceText || 'Hardware Reader') + ')';
-        rfidDisplayDetail.style.color = '#86efac';
 
-        if (rfidBadgeText) rfidBadgeText.textContent = 'Tag Captured';
+        try {
+            const res = await fetch('/api/rfid/lookup/' + encodeURIComponent(cleanUid));
+            const data = await res.json();
+            if (data.found && data.user) {
+                if (nameInput) nameInput.value = data.user.name || '';
+                const usernameInput = document.getElementById('username') || document.getElementById('email');
+                if (usernameInput) usernameInput.value = data.user.email || '';
+
+                rfidDisplayDetail.textContent = '✓ Existing User Found: ' + data.user.name + ' (Adding vehicle to account)';
+                rfidDisplayDetail.style.color = '#86efac';
+                if (rfidBadgeText) rfidBadgeText.textContent = 'Existing User Tag';
+            } else {
+                rfidDisplayDetail.textContent = '✓ Scanned & Verified (' + (sourceText || 'Hardware Reader') + ')';
+                rfidDisplayDetail.style.color = '#86efac';
+                if (rfidBadgeText) rfidBadgeText.textContent = 'Tag Captured';
+            }
+        } catch (_err) {
+            rfidDisplayDetail.textContent = '✓ Scanned & Verified (' + (sourceText || 'Hardware Reader') + ')';
+            rfidDisplayDetail.style.color = '#86efac';
+            if (rfidBadgeText) rfidBadgeText.textContent = 'Tag Captured';
+        }
 
         if (rfidCardBox) {
             rfidCardBox.style.borderColor = '#22c55e';

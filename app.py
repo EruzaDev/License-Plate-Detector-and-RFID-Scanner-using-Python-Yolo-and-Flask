@@ -221,6 +221,110 @@ def _is_email_in_use(email: str) -> bool:
     return row is not None
 
 
+def _get_user_by_rfid(rfid_uid: str) -> dict | None:
+    """Find existing user account by assigned RFID UID."""
+    norm_uid = _normalize_rfid(rfid_uid)
+    if not norm_uid:
+        return None
+    conn = _get_auth_connection()
+    row = conn.execute(
+        """
+        SELECT u.id, u.name, u.email, u.role, u.rfid_uid, u.is_active
+        FROM users u
+        WHERE UPPER(REPLACE(REPLACE(REPLACE(COALESCE(u.rfid_uid, ''), ' ', ''), '-', ''), '_', '')) = ?
+        LIMIT 1
+        """,
+        (norm_uid,),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def _get_user_by_email(email: str) -> dict | None:
+    """Find existing user account by email/username."""
+    clean_email = str(email or "").strip().lower()
+    if not clean_email:
+        return None
+    conn = _get_auth_connection()
+    row = conn.execute(
+        """
+        SELECT u.id, u.name, u.email, u.role, u.rfid_uid, u.is_active
+        FROM users u
+        WHERE LOWER(u.email) = ?
+        LIMIT 1
+        """,
+        (clean_email,),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def _get_owner_of_plate(plate_number: str) -> dict | None:
+    """
+    Check if a normalized plate number is already registered in vehicles or registered_plates.
+    Returns dict with user_id, owner_name, email, plate_number if registered, else None.
+    """
+    norm_p = _normalize_plate(plate_number)
+    if not norm_p or norm_p == "UNKNOWN":
+        return None
+
+    conn = _get_auth_connection()
+    row = conn.execute(
+        """
+        SELECT u.id AS user_id, u.name AS owner_name, u.email, v.plate_number
+        FROM vehicles v
+        JOIN users u ON u.id = v.user_id
+        WHERE UPPER(REPLACE(REPLACE(v.plate_number, ' ', ''), '-', '')) = ?
+        LIMIT 1
+        """,
+        (norm_p,),
+    ).fetchone()
+    if row:
+        conn.close()
+        return dict(row)
+
+    row_rp = conn.execute(
+        """
+        SELECT 0 AS user_id, owner_name, '' AS email, plate_number
+        FROM registered_plates
+        WHERE UPPER(REPLACE(REPLACE(plate_number, ' ', ''), '-', '')) = ?
+        LIMIT 1
+        """,
+        (norm_p,),
+    ).fetchone()
+    conn.close()
+    return dict(row_rp) if row_rp else None
+
+
+def _add_vehicle_to_user(user_id: int, plate_number: str, owner_name: str, rfid_uid: str | None = None) -> bool:
+    """Attach a new vehicle to an existing user account and sync registered_plates."""
+    norm_p = _normalize_plate(plate_number)
+    if not norm_p or norm_p == "UNKNOWN":
+        return False
+
+    conn = _get_auth_connection()
+    exists = conn.execute(
+        """
+        SELECT 1 FROM vehicles
+        WHERE user_id = ? AND UPPER(REPLACE(REPLACE(plate_number, ' ', ''), '-', '')) = ?
+        """,
+        (user_id, norm_p),
+    ).fetchone()
+
+    was_added = False
+    if not exists:
+        conn.execute(
+            "INSERT INTO vehicles (user_id, plate_number) VALUES (?, ?)",
+            (user_id, norm_p),
+        )
+        conn.commit()
+        was_added = True
+
+    conn.close()
+    register_plate(plate_number=norm_p, owner_name=owner_name, rfid_uid=rfid_uid or None)
+    return was_added
+
+
 def _create_auth_user(
     name: str,
     email: str,
@@ -694,7 +798,7 @@ def users_management():
 @app.route("/users/create", methods=["POST"])
 @_role_required("superadmin", "guard")
 def users_create():
-    """Create user accounts according to creator role permissions."""
+    """Create user accounts or attach new vehicles to existing accounts based on RFID/email."""
     creator_role = _current_role()
 
     name = request.form.get("name", "").strip()
@@ -738,10 +842,6 @@ def users_create():
         flash("Guards cannot create other guards.", "error")
         return redirect(url_for("users_management"))
 
-    if _is_email_in_use(email):
-        flash("That email is already registered.", "error")
-        return redirect(url_for("users_management"))
-
     if new_role == "user":
         if not final_plate:
             flash("User account requires a license plate. Scan first or enter manually.", "error")
@@ -750,6 +850,74 @@ def users_create():
             flash("User account requires an RFID UID scan/input.", "error")
             return redirect(url_for("users_management"))
 
+    # Parse individual requested plates
+    requested_plates = [_normalize_plate(p) for p in final_plate.split(",") if _normalize_plate(p)] if final_plate else []
+
+    # Check if RFID or Email matches an existing user account
+    existing_rfid_user = _get_user_by_rfid(rfid_uid) if rfid_uid else None
+    existing_email_user = _get_user_by_email(email) if email else None
+    target_user = existing_rfid_user or existing_email_user
+    target_user_id = target_user["id"] if target_user else None
+
+    # ---------------------------------------------------------------------
+    # RULE 1: License Plate Uniqueness
+    # Reject creation if any requested plate is already registered to ANOTHER user
+    # ---------------------------------------------------------------------
+    for p in requested_plates:
+        owner_info = _get_owner_of_plate(p)
+        if owner_info:
+            owner_user_id = owner_info.get("user_id")
+            if target_user_id is None or owner_user_id != target_user_id:
+                owner_name = owner_info.get("owner_name") or "another user"
+                flash(f'Vehicle is owned by "{owner_name}"', "error")
+                return redirect(url_for("users_management"))
+
+    # ---------------------------------------------------------------------
+    # RULE 2: Conflict Check (RFID vs Email mismatch between different users)
+    # ---------------------------------------------------------------------
+    if existing_rfid_user and existing_email_user and existing_rfid_user["id"] != existing_email_user["id"]:
+        flash(f"RFID UID '{rfid_uid}' belongs to user '{existing_rfid_user['name']}', but email '{email}' belongs to user '{existing_email_user['name']}'. Credentials mismatch.", "error")
+        return redirect(url_for("users_management"))
+
+    # ---------------------------------------------------------------------
+    # RULE 3: Same RFID / ID or Same Email Registered -> Attach Vehicle to Existing User
+    # ---------------------------------------------------------------------
+    if target_user:
+        user_id = target_user["id"]
+        user_name = target_user["name"]
+
+        # Ensure RFID UID is updated on the existing user if missing
+        if rfid_uid and not target_user.get("rfid_uid"):
+            conn = _get_auth_connection()
+            conn.execute("UPDATE users SET rfid_uid = ? WHERE id = ?", (rfid_uid, user_id))
+            conn.commit()
+            conn.close()
+
+        added_plates = []
+        already_plates = []
+        for p in requested_plates:
+            added = _add_vehicle_to_user(
+                user_id=user_id,
+                plate_number=p,
+                owner_name=user_name,
+                rfid_uid=rfid_uid or target_user.get("rfid_uid"),
+            )
+            if added:
+                added_plates.append(p)
+            else:
+                already_plates.append(p)
+
+        match_source = f"RFID UID '{rfid_uid}'" if existing_rfid_user else f"email '{email}'"
+        if added_plates:
+            flash(f"Recognized existing user '{user_name}' via {match_source}. Added new vehicle(s) '{', '.join(added_plates)}' to their account.", "success")
+        else:
+            flash(f"Vehicle(s) '{', '.join(already_plates)}' already registered to existing user '{user_name}' ({match_source}).", "info")
+
+        return redirect(url_for("users_management"))
+
+    # ---------------------------------------------------------------------
+    # RULE 4: Completely New User Creation
+    # ---------------------------------------------------------------------
     try:
         _create_auth_user(
             name=name,
@@ -759,12 +927,9 @@ def users_create():
             rfid_uid=rfid_uid or None,
             license_plate=final_plate or None,
         )
-    except sqlite3.IntegrityError:
-        flash("Unable to create account due to a database constraint.", "error")
+    except sqlite3.IntegrityError as err:
+        flash(f"Unable to create account due to database constraint: {err}", "error")
         return redirect(url_for("users_management"))
-
-    if new_role == "user" and final_plate:
-        register_plate(plate_number=final_plate, owner_name=name, rfid_uid=rfid_uid or None)
 
     feedback_source = scan_source or scanned_plate
     if new_role == "user" and feedback_source and final_plate and feedback_source != final_plate:
@@ -774,7 +939,7 @@ def users_create():
             source="user_management_manual_override",
         )
 
-    flash(f"{new_role.title()} account created successfully.", "success")
+    flash(f"{new_role.title()} account '{name}' created successfully with vehicle '{final_plate}'.", "success")
     return redirect(url_for("users_management"))
 
 
@@ -808,6 +973,12 @@ def users_update(user_id: int):
 
     if raw_manual_plate:
         plates_list = [_normalize_plate(p) for p in raw_manual_plate.split(",") if _normalize_plate(p)]
+        # Uniqueness check for each plate against OTHER users
+        for p in plates_list:
+            owner_info = _get_owner_of_plate(p)
+            if owner_info and owner_info.get("user_id") != user_id:
+                flash(f"License plate '{p}' is already registered to user '{owner_info.get('owner_name')}'. Each license plate must be unique.", "error")
+                return redirect(url_for("users_management"))
         final_plate = ", ".join(plates_list)
     else:
         final_plate = ""
@@ -1363,6 +1534,24 @@ def api_rfid_last_scan():
     return jsonify(get_last_rfid_scan())
 
 
+@app.route("/api/rfid/lookup/<rfid_uid>")
+def api_rfid_lookup(rfid_uid: str):
+    """Check if an RFID UID belongs to an existing user and return user details for form auto-fill."""
+    user = _get_user_by_rfid(rfid_uid)
+    if user:
+        return jsonify({
+            "found": True,
+            "user": {
+                "id": user["id"],
+                "name": user["name"],
+                "email": user["email"],
+                "role": user["role"],
+                "rfid_uid": user["rfid_uid"],
+            }
+        })
+    return jsonify({"found": False, "user": None})
+
+
 @app.route("/api/rfid/trigger_scan", methods=["POST"])
 def api_rfid_trigger_scan():
     """
@@ -1472,8 +1661,7 @@ def api_verify_rfid():
     decision = result.get("decision")
     if decision == "ACCESS_GRANTED":
         # Check camera from detection
-        conn = sqlite3.connect("lpr_system.db")
-        conn.row_factory = sqlite3.Row
+        conn = _get_auth_connection()
         d_row = conn.execute("SELECT camera FROM detections WHERE id = ?", (detection_id,)).fetchone()
         conn.close()
         gate = d_row["camera"] if d_row else "entrance"

@@ -163,7 +163,7 @@
         return (v || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
     }
 
-    function updateRfid(uid, sourceText) {
+    async function updateRfid(uid, sourceText) {
         const cleanUid = normalizeRfid(uid);
         if (!cleanUid || !rfidInput) return;
 
@@ -172,13 +172,42 @@
             rfidDisplayUid.textContent = cleanUid;
             rfidDisplayUid.style.color = '#22c55e';
         }
-        if (rfidDisplayDetail) {
-            rfidDisplayDetail.textContent = '✓ Scanned & Verified (' + (sourceText || 'Hardware Reader') + ')';
-            rfidDisplayDetail.style.color = '#86efac';
+
+        try {
+            const res = await fetch('/api/rfid/lookup/' + encodeURIComponent(cleanUid));
+            const data = await res.json();
+            if (data.found && data.user) {
+                const nameIn = document.getElementById('name');
+                const emailIn = document.getElementById('email');
+                if (nameIn) nameIn.value = data.user.name || '';
+                if (emailIn) emailIn.value = data.user.email || '';
+
+                if (rfidDisplayDetail) {
+                    rfidDisplayDetail.textContent = '✓ Existing User Found: ' + data.user.name + ' (Adding vehicle to account)';
+                    rfidDisplayDetail.style.color = '#86efac';
+                }
+                if (rfidLiveBadge) {
+                    rfidLiveBadge.textContent = '● Existing User Tag';
+                }
+            } else {
+                if (rfidDisplayDetail) {
+                    rfidDisplayDetail.textContent = '✓ Scanned & Verified (' + (sourceText || 'Hardware Reader') + ')';
+                    rfidDisplayDetail.style.color = '#86efac';
+                }
+                if (rfidLiveBadge) {
+                    rfidLiveBadge.textContent = '● Tag Captured';
+                }
+            }
+        } catch (_e) {
+            if (rfidDisplayDetail) {
+                rfidDisplayDetail.textContent = '✓ Scanned & Verified (' + (sourceText || 'Hardware Reader') + ')';
+                rfidDisplayDetail.style.color = '#86efac';
+            }
+            if (rfidLiveBadge) {
+                rfidLiveBadge.textContent = '● Tag Captured';
+            }
         }
-        if (rfidLiveBadge) {
-            rfidLiveBadge.textContent = '● Tag Captured';
-        }
+
         if (rfidCardBox) {
             rfidCardBox.style.borderColor = '#22c55e';
             rfidCardBox.style.boxShadow = '0 0 12px rgba(34, 197, 94, 0.35)';

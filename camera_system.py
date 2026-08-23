@@ -532,7 +532,7 @@ def trigger_instant_capture(camera_name: str, rfid_uid: str | None = None) -> di
 
     if access_granted:
         play_gate_success(clean_cam)
-    else:
+    elif final_plate and final_plate != "UNKNOWN":
         play_sound("denied", gate=clean_cam)
 
     print(

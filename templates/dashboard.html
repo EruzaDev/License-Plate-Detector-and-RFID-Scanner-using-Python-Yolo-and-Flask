@@ -719,6 +719,8 @@
                 <tr>
                     <th>Thumbnail</th>
                     <th>Plate Number</th>
+                    <th>Driver / ID Owner</th>
+                    <th>Status</th>
                     <th>Camera</th>
                     <th>Date &amp; Time</th>
                     <th>Confidence</th>
@@ -726,7 +728,7 @@
                 </tr>
             </thead>
             <tbody id="det-body">
-                <tr><td colspan="6" class="no-data">Loading…</td></tr>
+                <tr><td colspan="8" class="no-data">Loading…</td></tr>
             </tbody>
         </table>
     </div>
@@ -932,7 +934,7 @@
             const rows = await res.json();
 
             if (!rows.length) {
-                tbody.innerHTML = '<tr><td colspan="6" class="no-data">No detections found.</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="8" class="no-data">No detections found.</td></tr>';
                 return;
             }
 
@@ -952,13 +954,29 @@
                     ? `<img class="thumb" src="${r.image_url}" alt="${r.plate_number}" onerror="this.style.display='none'">`
                     : '<span class="no-thumb">N/A</span>';
 
+                let confText = 'N/A';
+                if (r.confidence !== null && r.confidence !== undefined) {
+                    const numConf = Number(r.confidence);
+                    if (!isNaN(numConf)) {
+                        confText = (numConf <= 1.0 ? numConf * 100 : numConf).toFixed(1) + '%';
+                    }
+                }
+
+                const driverText = r.driver_name || 'Unregistered Tag';
+                const isSuccess = (r.access_decision === 'SUCCESSFUL' || r.rfid_status === 'MATCH');
+                const statusBadge = isSuccess
+                    ? '<span class="badge-status" style="background:rgba(34,197,94,0.18); color:#22c55e; font-weight:700; padding:0.2rem 0.55rem; border-radius:6px; border:1px solid rgba(34,197,94,0.3); font-size:0.75rem;">✓ SUCCESSFUL</span>'
+                    : '<span class="badge-status" style="background:rgba(239,68,68,0.18); color:#ef4444; font-weight:700; padding:0.2rem 0.55rem; border-radius:6px; border:1px solid rgba(239,68,68,0.3); font-size:0.75rem;">✕ UNSUCCESSFUL</span>';
+
                 return `
                 <tr>
                     <td>${thumb}</td>
-                    <td><strong>${r.plate_number}</strong></td>
+                    <td><strong>${r.plate_number || 'UNKNOWN'}</strong></td>
+                    <td><span style="color:#e2e8f0; font-weight:600;"><span style="color:#94a3b8; font-size:0.8rem;">👤</span> ${driverText}</span></td>
+                    <td>${statusBadge}</td>
                     <td><span class="badge ${r.camera}">${r.camera}</span></td>
                     <td>${r.timestamp}</td>
-                    <td class="confidence">${(r.confidence * 100).toFixed(1)}%</td>
+                    <td class="confidence">${confText}</td>
                     <td>
                         <button class="btn-correct-row" onclick="showCorrectionPrompt(${r.id}, '${(r.plate_number || '').replace(/'/g, "&#39;")}')">
                             Correct
@@ -969,7 +987,7 @@
             }).join('');
         } catch (e) {
             console.error('Detections error:', e);
-            tbody.innerHTML = '<tr><td colspan="6" class="no-data">Error loading data.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="8" class="no-data">Error loading data.</td></tr>';
         }
     }
 
@@ -1126,14 +1144,6 @@
 
     manualPlateInput.addEventListener('keydown', (ev) => {
         if (ev.key === 'Enter') submitManualPlate();
-    });
-
-    scanManualPlate.addEventListener('keydown', (ev) => {
-        if (ev.key === 'Enter') submitScanPrompt();
-    });
-
-    scanIdInput.addEventListener('keydown', (ev) => {
-        if (ev.key === 'Enter') submitScanPrompt();
     });
 
     correctPlateInput.addEventListener('keydown', (ev) => {

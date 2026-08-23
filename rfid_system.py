@@ -380,12 +380,6 @@ def _default_on_scan(camera_name: str, scanned_uid: str) -> None:
 
     if target is None:
         print(f"[rfid-{clean_gate}] Scanned UID {scanned_uid}, but no active camera frame or pending detection found for '{clean_gate}'.")
-        # Check if the tag itself is registered in the system
-        if is_rfid_registered(scanned_uid):
-            play_sound("successful", gate=clean_gate)
-        else:
-            play_sound("denied", gate=clean_gate)
-
         reader = _readers.get(clean_gate)
         if reader:
             with reader._lock:

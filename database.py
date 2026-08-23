@@ -101,6 +101,8 @@ def init_db():
     _ensure_column(conn, "detections", "sync_synced_at TEXT")
     _ensure_column(conn, "detections", "trip_status TEXT DEFAULT 'ACTIVE'")
     _ensure_column(conn, "detections", "entry_detection_id INTEGER")
+    _ensure_column(conn, "detections", "driver_name TEXT")
+    _ensure_column(conn, "detections", "access_decision TEXT")
 
     conn.execute(
         """
@@ -219,7 +221,9 @@ def insert_detection(plate_number: str, camera: str, timestamp: str,
                      rfid_verified_at: str | None = None,
                      sync_status: str | None = None,
                      trip_status: str | None = None,
-                     entry_detection_id: int | None = None) -> int:
+                     entry_detection_id: int | None = None,
+                     driver_name: str | None = None,
+                     access_decision: str | None = None) -> int:
     """
     Insert a new detection record.
     Returns the new row id.
@@ -233,6 +237,9 @@ def insert_detection(plate_number: str, camera: str, timestamp: str,
     status_value = (match_status or "NO_MATCH").upper()
     expected_uid_value = _normalize_rfid_uid(expected_rfid_uid) or None
     scanned_uid_value = _normalize_rfid_uid(scanned_rfid_uid) or None
+
+    if not driver_name:
+        driver_name = _get_driver_name_by_rfid_or_plate(scanned_uid_value or expected_uid_value, normalized_plate) or "Unregistered Tag"
     if rfid_status is None:
         rfid_status_value = "NOT_SCANNED" if expected_uid_value else "NOT_REQUIRED"
     else:
@@ -242,6 +249,7 @@ def insert_detection(plate_number: str, camera: str, timestamp: str,
         sync_status_value = "PENDING"
     
     clean_cam = str(camera or "").strip().lower()
+    clean_timestamp = str(timestamp or "").replace("T", " ")
     if trip_status is None:
         trip_status_value = "ACTIVE" if clean_cam == "entrance" else "EXITED"
     else:
@@ -270,13 +278,15 @@ def insert_detection(plate_number: str, camera: str, timestamp: str,
                sync_last_attempt_at,
                sync_synced_at,
                trip_status,
-               entry_detection_id
+               entry_detection_id,
+               driver_name,
+               access_decision
            )
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             normalized_plate,
             camera,
-            timestamp,
+            clean_timestamp,
             image_path,
             confidence,
             normalized_ocr_raw,
@@ -296,6 +306,8 @@ def insert_detection(plate_number: str, camera: str, timestamp: str,
             None,
             trip_status_value,
             entry_detection_id,
+            driver_name,
+            access_decision or ("SUCCESSFUL" if rfid_status_value in ("MATCH", "ACCESS_GRANTED") else "UNSUCCESSFUL"),
         ),
     )
     conn.commit()
@@ -316,7 +328,7 @@ def get_active_entrance_records(max_age_minutes: int = 1440) -> list[dict]:
         FROM detections
         WHERE LOWER(camera) = 'entrance'
           AND (trip_status IS NULL OR trip_status != 'DEPARTED')
-          AND datetime(timestamp) >= datetime('now', '-' || ? || ' minutes')
+          AND datetime(REPLACE(timestamp, 'T', ' ')) >= datetime('now', '-' || ? || ' minutes')
         ORDER BY id DESC
         LIMIT 100
         """,
@@ -586,6 +598,23 @@ def get_plates_by_rfid_uid(rfid_uid: str) -> list[dict]:
     return result
 
 
+_OCR_CONFUSION_PAIRS = {
+    frozenset(("O", "0")), frozenset(("O", "Q")), frozenset(("0", "Q")),
+    frozenset(("O", "D")), frozenset(("0", "D")), frozenset(("I", "1")),
+    frozenset(("I", "L")), frozenset(("1", "L")), frozenset(("I", "|")),
+    frozenset(("S", "5")), frozenset(("B", "8")), frozenset(("Z", "2")),
+    frozenset(("G", "6")), frozenset(("C", "G")), frozenset(("D", "0")),
+    frozenset(("T", "7")), frozenset(("A", "4")), frozenset(("U", "V")),
+    frozenset(("E", "F")), frozenset(("K", "X")), frozenset(("M", "N")),
+    frozenset(("P", "R")), frozenset(("H", "N")), frozenset(("Y", "V")),
+}
+
+def _are_ocr_confusable(c1: str, c2: str) -> bool:
+    if c1.upper() == c2.upper():
+        return True
+    return frozenset((c1.upper(), c2.upper())) in _OCR_CONFUSION_PAIRS
+
+
 def verify_rfid_plate_match(rfid_uid: str, scanned_plate: str) -> tuple[bool, str | None]:
     """
     Verify if a scanned plate matches ANY of the vehicles registered to the given RFID UID.
@@ -617,8 +646,7 @@ def verify_rfid_plate_match(rfid_uid: str, scanned_plate: str) -> tuple[bool, st
             for c1, c2 in zip(reg_p, normalized_plate):
                 if c1 == c2:
                     continue
-                from ocr_processor import are_ocr_confusable
-                if are_ocr_confusable(c1, c2):
+                if _are_ocr_confusable(c1, c2):
                     confusables += 1
                 else:
                     mismatches += 1
@@ -655,8 +683,8 @@ def get_pending_rfid_verifications(limit: int = 20) -> list:
         SELECT id, plate_number, camera, timestamp, image_path, confidence,
                rfid_status, expected_rfid_uid, scanned_rfid_uid, rfid_verified_at
         FROM detections
-        WHERE UPPER(COALESCE(rfid_status, '')) IN ('NOT_SCANNED', 'NOT_REQUIRED', 'PENDING')
-           OR (scanned_rfid_uid IS NULL AND rfid_verified_at IS NULL)
+        WHERE UPPER(COALESCE(rfid_status, '')) IN ('NOT_SCANNED', 'PENDING')
+           OR (rfid_status IS NULL AND scanned_rfid_uid IS NULL AND rfid_verified_at IS NULL)
         ORDER BY timestamp DESC, id DESC
         LIMIT ?
         """,
@@ -1191,11 +1219,11 @@ def get_logbook_entries(
     params: list[Any] = []
 
     if date_from:
-        where_clauses.append("d.timestamp >= ?")
+        where_clauses.append("REPLACE(d.timestamp, 'T', ' ') >= ?")
         params.append(f"{date_from} 00:00:00")
 
     if date_to:
-        where_clauses.append("d.timestamp <= ?")
+        where_clauses.append("REPLACE(d.timestamp, 'T', ' ') <= ?")
         params.append(f"{date_to} 23:59:59")
 
     direction_norm = str(direction or "").strip().upper()
@@ -1212,10 +1240,10 @@ def get_logbook_entries(
     user_query = str(user or "").strip()
     if user_query:
         where_clauses.append(
-            "(COALESCE(rp.owner_name, '') LIKE ? OR d.plate_number LIKE ?)"
+            "(COALESCE(rp.owner_name, '') LIKE ? OR COALESCE(u.name, '') LIKE ? OR d.plate_number LIKE ?)"
         )
         like = f"%{user_query}%"
-        params.extend([like, like])
+        params.extend([like, like, like])
 
     sql = f"""
         SELECT
@@ -1229,13 +1257,17 @@ def get_logbook_entries(
             d.rfid_status,
             d.match_status,
             d.image_path,
-            COALESCE(rp.owner_name, '') AS owner_name,
+            COALESCE(NULLIF(rp.owner_name, ''), NULLIF(u.name, ''), '') AS owner_name,
             {direction_case} AS direction,
             {source_case} AS entry_source,
             {status_case} AS status
         FROM detections d
         LEFT JOIN registered_plates rp
             ON rp.plate_number = d.plate_number
+        LEFT JOIN vehicles v
+            ON v.plate_number = d.plate_number
+        LEFT JOIN users u
+            ON u.id = v.user_id
     """
 
     if where_clauses:
@@ -1385,26 +1417,108 @@ def discard_manual_input(manual_input_id: int) -> dict | None:
     }
 
 
+def _get_driver_name_by_rfid_or_plate(rfid_uid: str | None, plate_number: str | None) -> str | None:
+    """Find driver/owner name by RFID UID or plate number."""
+    norm_uid = _normalize_rfid_uid(rfid_uid) if rfid_uid else None
+    norm_plate = _normalize_plate(plate_number) if plate_number else None
+    conn = _get_connection()
+
+    if norm_uid:
+        user_row = conn.execute(
+            """
+            SELECT name FROM users
+            WHERE UPPER(REPLACE(REPLACE(COALESCE(rfid_uid, ''), ' ', ''), '-', '')) = ?
+            LIMIT 1
+            """,
+            (norm_uid,),
+        ).fetchone()
+        if user_row and user_row["name"]:
+            return user_row["name"]
+
+        rp_row = conn.execute(
+            """
+            SELECT owner_name FROM registered_plates
+            WHERE UPPER(REPLACE(REPLACE(COALESCE(rfid_uid, ''), ' ', ''), '-', '')) = ?
+              AND owner_name IS NOT NULL AND owner_name != ''
+            LIMIT 1
+            """,
+            (norm_uid,),
+        ).fetchone()
+        if rp_row and rp_row["owner_name"]:
+            return rp_row["owner_name"]
+
+    if norm_plate and norm_plate != "UNKNOWN":
+        vh_row = conn.execute(
+            """
+            SELECT u.name FROM vehicles v
+            JOIN users u ON u.id = v.user_id
+            WHERE UPPER(REPLACE(REPLACE(v.plate_number, ' ', ''), '-', '')) = ?
+            LIMIT 1
+            """,
+            (norm_plate,),
+        ).fetchone()
+        if vh_row and vh_row["name"]:
+            return vh_row["name"]
+
+        rp_row2 = conn.execute(
+            """
+            SELECT owner_name FROM registered_plates
+            WHERE UPPER(REPLACE(REPLACE(plate_number, ' ', ''), '-', '')) = ?
+              AND owner_name IS NOT NULL AND owner_name != ''
+            LIMIT 1
+            """,
+            (norm_plate,),
+        ).fetchone()
+        if rp_row2 and rp_row2["owner_name"]:
+            return rp_row2["owner_name"]
+
+    return None
+
+
+def _enrich_detection_record(row_dict: dict) -> dict:
+    """Enrich detection dictionary with driver_name and access_decision."""
+    rec = dict(row_dict)
+    scanned_uid = rec.get("scanned_rfid_uid") or rec.get("expected_rfid_uid")
+    plate_num = rec.get("plate_number") or rec.get("matched_plate")
+
+    driver = rec.get("driver_name")
+    if not driver or driver == "Unregistered Tag":
+        driver = _get_driver_name_by_rfid_or_plate(scanned_uid, plate_num)
+        rec["driver_name"] = driver or "Unregistered Tag"
+
+    decision = rec.get("access_decision")
+    if not decision:
+        rfid_st = str(rec.get("rfid_status") or "").upper()
+        match_st = str(rec.get("match_status") or "").upper()
+        if rfid_st in ("MATCH", "ACCESS_GRANTED") or match_st in ("EXACT_MATCH", "FUZZY_MATCH", "AUTO_MATCHED"):
+            decision = "SUCCESSFUL"
+        else:
+            decision = "UNSUCCESSFUL"
+        rec["access_decision"] = decision
+
+    return rec
+
+
 def get_recent_detections(limit: int = 50) -> list:
     """Return the most recent detections (newest first)."""
     conn = _get_connection()
     rows = conn.execute(
-        "SELECT * FROM detections ORDER BY timestamp DESC LIMIT ?", (limit,)
+        "SELECT * FROM detections ORDER BY timestamp DESC, id DESC LIMIT ?", (limit,)
     ).fetchall()
-    return [dict(r) for r in rows]
+    return [_enrich_detection_record(r) for r in rows]
 
 
 def get_detections_by_date(date_str: str) -> list:
     """
     Return all detections for a given date (YYYY-MM-DD).
-    Uses a LIKE prefix match on the ISO timestamp.
+    Uses a LIKE prefix match on the timestamp.
     """
     conn = _get_connection()
     rows = conn.execute(
-        "SELECT * FROM detections WHERE timestamp LIKE ? ORDER BY timestamp DESC",
+        "SELECT * FROM detections WHERE REPLACE(timestamp, 'T', ' ') LIKE ? ORDER BY timestamp DESC, id DESC",
         (f"{date_str}%",),
     ).fetchall()
-    return [dict(r) for r in rows]
+    return [_enrich_detection_record(r) for r in rows]
 
 
 def get_detections_by_camera(camera: str, limit: int = 100) -> list:
@@ -1414,7 +1528,7 @@ def get_detections_by_camera(camera: str, limit: int = 100) -> list:
         "SELECT * FROM detections WHERE camera = ? ORDER BY timestamp DESC LIMIT ?",
         (camera, limit),
     ).fetchall()
-    return [dict(r) for r in rows]
+    return [_enrich_detection_record(r) for r in rows]
 
 
 def get_pending_sync_detections(limit: int = 100, include_failed: bool = True) -> list:
