@@ -248,7 +248,7 @@ def _get_user_by_email(email: str) -> dict | None:
     conn = _get_auth_connection()
     row = conn.execute(
         """
-        SELECT u.id, u.name, u.email, u.role, u.rfid_uid, u.is_active
+        SELECT u.id, u.name, u.email, u.password_hash, u.role, u.rfid_uid, u.is_active
         FROM users u
         WHERE LOWER(u.email) = ?
         LIMIT 1
@@ -1860,4 +1860,3 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
     print(f"[web] Dashboard -> http://0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port, threaded=True, debug=False)
-

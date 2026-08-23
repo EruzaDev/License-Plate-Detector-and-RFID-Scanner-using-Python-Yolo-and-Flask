@@ -962,17 +962,21 @@
                     }
                 }
 
-                const driverText = r.driver_name || 'Unregistered Tag';
+                const driverText = (r.driver_name && r.driver_name !== 'Unregistered Tag') ? r.driver_name : 'Unknown';
                 const isSuccess = (r.access_decision === 'SUCCESSFUL' || r.rfid_status === 'MATCH');
                 const statusBadge = isSuccess
                     ? '<span class="badge-status" style="background:rgba(34,197,94,0.18); color:#22c55e; font-weight:700; padding:0.2rem 0.55rem; border-radius:6px; border:1px solid rgba(34,197,94,0.3); font-size:0.75rem;">✓ SUCCESSFUL</span>'
                     : '<span class="badge-status" style="background:rgba(239,68,68,0.18); color:#ef4444; font-weight:700; padding:0.2rem 0.55rem; border-radius:6px; border:1px solid rgba(239,68,68,0.3); font-size:0.75rem;">✕ UNSUCCESSFUL</span>';
 
+                const driverDisplay = (driverText === 'Unknown')
+                    ? '<span style="color:#94a3b8; font-weight:500;"><span style="color:#64748b; font-size:0.8rem;">👤</span> Unknown</span>'
+                    : `<span style="color:#e2e8f0; font-weight:600;"><span style="color:#94a3b8; font-size:0.8rem;">👤</span> ${driverText}</span>`;
+
                 return `
                 <tr>
                     <td>${thumb}</td>
                     <td><strong>${r.plate_number || 'UNKNOWN'}</strong></td>
-                    <td><span style="color:#e2e8f0; font-weight:600;"><span style="color:#94a3b8; font-size:0.8rem;">👤</span> ${driverText}</span></td>
+                    <td>${driverDisplay}</td>
                     <td>${statusBadge}</td>
                     <td><span class="badge ${r.camera}">${r.camera}</span></td>
                     <td>${r.timestamp}</td>

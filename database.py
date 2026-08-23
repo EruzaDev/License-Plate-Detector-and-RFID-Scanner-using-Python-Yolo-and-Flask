@@ -238,8 +238,8 @@ def insert_detection(plate_number: str, camera: str, timestamp: str,
     expected_uid_value = _normalize_rfid_uid(expected_rfid_uid) or None
     scanned_uid_value = _normalize_rfid_uid(scanned_rfid_uid) or None
 
-    if not driver_name:
-        driver_name = _get_driver_name_by_rfid_or_plate(scanned_uid_value or expected_uid_value, normalized_plate) or "Unregistered Tag"
+    if not driver_name or driver_name in ("Unregistered Tag", "N/A"):
+        driver_name = _get_driver_name_by_rfid_or_plate(scanned_uid_value or expected_uid_value, normalized_plate) or "Unknown"
     if rfid_status is None:
         rfid_status_value = "NOT_SCANNED" if expected_uid_value else "NOT_REQUIRED"
     else:
@@ -1417,8 +1417,8 @@ def discard_manual_input(manual_input_id: int) -> dict | None:
     }
 
 
-def _get_driver_name_by_rfid_or_plate(rfid_uid: str | None, plate_number: str | None) -> str | None:
-    """Find driver/owner name by RFID UID or plate number."""
+def _get_driver_name_by_rfid_or_plate(rfid_uid: str | None, plate_number: str | None) -> str:
+    """Find driver/owner name by RFID UID or plate number. Returns 'Unknown' if unregistered."""
     norm_uid = _normalize_rfid_uid(rfid_uid) if rfid_uid else None
     norm_plate = _normalize_plate(plate_number) if plate_number else None
     conn = _get_connection()
@@ -1427,7 +1427,7 @@ def _get_driver_name_by_rfid_or_plate(rfid_uid: str | None, plate_number: str | 
         user_row = conn.execute(
             """
             SELECT name FROM users
-            WHERE UPPER(REPLACE(REPLACE(COALESCE(rfid_uid, ''), ' ', ''), '-', '')) = ?
+            WHERE UPPER(REPLACE(REPLACE(REPLACE(COALESCE(rfid_uid, ''), ' ', ''), '-', ''), '_', '')) = ?
             LIMIT 1
             """,
             (norm_uid,),
@@ -1438,7 +1438,7 @@ def _get_driver_name_by_rfid_or_plate(rfid_uid: str | None, plate_number: str | 
         rp_row = conn.execute(
             """
             SELECT owner_name FROM registered_plates
-            WHERE UPPER(REPLACE(REPLACE(COALESCE(rfid_uid, ''), ' ', ''), '-', '')) = ?
+            WHERE UPPER(REPLACE(REPLACE(REPLACE(COALESCE(rfid_uid, ''), ' ', ''), '-', ''), '_', '')) = ?
               AND owner_name IS NOT NULL AND owner_name != ''
             LIMIT 1
             """,
@@ -1446,6 +1446,9 @@ def _get_driver_name_by_rfid_or_plate(rfid_uid: str | None, plate_number: str | 
         ).fetchone()
         if rp_row and rp_row["owner_name"]:
             return rp_row["owner_name"]
+
+        # An RFID tag was swiped but it is unregistered -> driver is Unknown
+        return "Unknown"
 
     if norm_plate and norm_plate != "UNKNOWN":
         vh_row = conn.execute(
@@ -1472,7 +1475,7 @@ def _get_driver_name_by_rfid_or_plate(rfid_uid: str | None, plate_number: str | 
         if rp_row2 and rp_row2["owner_name"]:
             return rp_row2["owner_name"]
 
-    return None
+    return "Unknown"
 
 
 def _enrich_detection_record(row_dict: dict) -> dict:
@@ -1482,9 +1485,9 @@ def _enrich_detection_record(row_dict: dict) -> dict:
     plate_num = rec.get("plate_number") or rec.get("matched_plate")
 
     driver = rec.get("driver_name")
-    if not driver or driver == "Unregistered Tag":
+    if not driver or driver in ("Unregistered Tag", "N/A"):
         driver = _get_driver_name_by_rfid_or_plate(scanned_uid, plate_num)
-        rec["driver_name"] = driver or "Unregistered Tag"
+        rec["driver_name"] = driver or "Unknown"
 
     decision = rec.get("access_decision")
     if not decision:
